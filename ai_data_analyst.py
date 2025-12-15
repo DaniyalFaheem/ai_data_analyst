@@ -528,27 +528,66 @@ def parse_datagpt_query(query, df, filename=""):
                 detected_intent = intent
                 break
         
-        # Try to find column in query
+        # Try to find column in query - check if column name appears in the query text
+        query_lower = query_text.lower()
+        query_words = query_lower.replace('_', ' ').replace('-', ' ').replace("'s", "").split()
+        
+        # Helper to normalize words (handle plurals, etc.)
+        def normalize_word(word):
+            word = word.lower().strip()
+            # Remove common suffixes for matching
+            if word.endswith('ies'):
+                return [word, word[:-3] + 'y']  # categories -> category
+            elif word.endswith('es'):
+                return [word, word[:-2], word[:-1]]  # prices -> price, boxes -> box
+            elif word.endswith('s') and len(word) > 3:
+                return [word, word[:-1]]  # prices -> price
+            return [word]
+        
+        # Build normalized query words
+        normalized_query = []
+        for w in query_words:
+            normalized_query.extend(normalize_word(w))
+        
+        # Method 1: Direct column name matching (exact or partial)
         for col in df_columns:
-            if find_column(col, df_columns):
-                # Extract the part of query that might be column name
-                words = query_text.split()
-                for i, word in enumerate(words):
-                    # Try progressively longer phrases
-                    for j in range(i+1, min(i+4, len(words)+1)):
-                        phrase = ' '.join(words[i:j])
-                        found = find_column(phrase, df_columns)
-                        if found: 
-                            detected_column = found
-                            break
-                    if detected_column:
-                        break
+            col_lower = col.lower()
+            col_clean = col_lower.replace('_', ' ').replace('-', ' ')
+            
+            # Check if column name or cleaned version appears in query
+            if col_lower in query_lower or col_clean in query_lower:
+                detected_column = col
+                break
+            
+            # Check normalized versions
+            col_normalized = normalize_word(col_lower)
+            if any(cn in normalized_query for cn in col_normalized):
+                detected_column = col
+                break
+            
+            # Check if any significant word from column name appears in query
+            col_words = [w for w in col_clean.split() if len(w) > 2]
+            for col_word in col_words:
+                col_word_normalized = normalize_word(col_word)
+                if any(cw in normalized_query for cw in col_word_normalized):
+                    detected_column = col
+                    break
             if detected_column:
                 break
         
-        # If still not found, try each column name
+        # Method 2: Try extracting phrases from query and matching to columns
         if not detected_column:
-            detected_column = find_column(query_text, df_columns)
+            words = query_text.lower().split()
+            for i in range(len(words)):
+                # Try progressively longer phrases (1, 2, 3 words)
+                for j in range(i+1, min(i+4, len(words)+1)):
+                    phrase = ' '.join(words[i:j])
+                    found = find_column(phrase, df_columns)
+                    if found:
+                        detected_column = found
+                        break
+                if detected_column:
+                    break
         
         return detected_intent, detected_column
     
@@ -850,6 +889,28 @@ def parse_datagpt_query(query, df, filename=""):
                 for val, count in vc.head(10).items():
                     response += f"- **{val}**: {count: ,} ({count/len(df)*100:.1f}%)\n"
                 return response, None
+        
+        # DEFAULT: Column found but no specific intent - provide quick summary
+        if df[col].dtype in ['float64', 'int64']:
+            return f"""📊 **{col}** Quick Summary:
+- Mean: **{df[col].mean():.2f}**
+- Median: {df[col].median():.2f}
+- Min: {df[col].min():.2f}
+- Max: {df[col].max():.2f}
+- Unique values: {df[col].nunique():,}
+
+💡 Try: "average {col}", "analyze {col}", "show unique {col}" for more details!
+""", None
+        else:
+            top_3 = df[col].value_counts().head(3)
+            top_vals = ', '.join([f"**{v}** ({c:,})" for v, c in top_3.items()])
+            return f"""📊 **{col}** Quick Summary:
+- Type: {df[col].dtype}
+- Unique values: **{df[col].nunique():,}**
+- Top values: {top_vals}
+
+💡 Try: "analyze {col}", "show unique {col}" for more details!
+""", None
     
     # ========== FALLBACK WITH SMART SUGGESTIONS ==========
     # Try to extract potential column names from query
@@ -1180,4 +1241,4 @@ if __name__ == '__main__':
     print("\n💬 DataGPT handles 1000+ question variations!")
     print("\n💡 Press CTRL+C to stop\n")
     print("="*70)
-    app.run_server(debug=False, host='0.0.0.0', port=8050)  # Changed debug=False
+    app.run(debug=False, host='0.0.0.0', port=8050)
