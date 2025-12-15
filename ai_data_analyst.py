@@ -1032,15 +1032,17 @@ def create_visualization_layout():
 def create_automl_layout():
     return html.Div([
         html.H2("🧠 AutoML Agent", className="section-title mb-4"),
-        dbc.Row([dbc.Col([html. Div([
+        dbc.Row([dbc.Col([html.Div([
             html.H4("🤖 Automated ML", style={'color': '#2c3e50'}),
             html.P("Select target and train model", style={'color': '#666'}),
             dcc.Dropdown(id="target-column-selector", className="mb-3"),
             dbc.Button([html.Span("🚀 "), "Train Model"], id="btn-train", size="lg", className="btn-custom w-100"),
             html.Div(id="training-status", className="mt-4")
         ], className="glass-card p-4 mb-4")])]),
-        dbc.Row([dbc.Col([html.Div([html. Div(id="model-results")], className="glass-card p-4")])]),
-        dbc.Row([dbc.Col([html. Div([dcc.Graph(id="feature-importance-chart")], className="glass-card p-4")])])
+        html.Div(id="automl-results-container", children=[
+            dbc.Row([dbc.Col([html.Div([html.Div(id="model-results")], className="glass-card p-4")])]),
+            dbc.Row([dbc.Col([html.Div([dcc.Graph(id="feature-importance-chart")], className="glass-card p-4")])])
+        ], style={'display': 'none'})
     ])
 
 def create_datagpt_layout():
@@ -1203,7 +1205,7 @@ def update_target_sel(p, d, sid):
     return [{'label': c, 'value':  c} for c in df.columns], None
 
 @app.callback(
-    [Output('training-status', 'children'), Output('model-results', 'children'), Output('feature-importance-chart', 'figure')],
+    [Output('training-status', 'children'), Output('model-results', 'children'), Output('feature-importance-chart', 'figure'), Output('automl-results-container', 'style')],
     [Input('btn-train', 'n_clicks')],
     [State('target-column-selector', 'value'), State('session-id', 'data')]
 )
@@ -1212,9 +1214,10 @@ def train_model_cb(n, tc, sid):
     df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
     try:
         r = train_ml_model(df, tc)
-        return dbc.Alert([html. Span("✅ "), "Trained!"], color="success"), html.Div([html.H5(f"🎯 {r['task_type']. title()}", style={'color': '#2c3e50'}), html.Div([html. Span(f"{r['metric_name']}: "), html.Span(f"{r['score']:.4f}", style={'fontSize': '2rem', 'color': '#667eea'})])]), create_feature_importance_chart(r['feature_importance'])
+        return dbc.Alert([html.Span("✅ "), "Trained!"], color="success"), html.Div([html.H5(f"🎯 {r['task_type'].title()}", style={'color': '#2c3e50'}), html.Div([html.Span(f"{r['metric_name']}: "), html.Span(f"{r['score']:.4f}", style={'fontSize': '2rem', 'color': '#667eea'})])]), create_feature_importance_chart(r['feature_importance']), {'display': 'block'}
     except Exception as e:
-        return dbc.Alert([html.Span("❌ "), str(e)], color="danger"), html.Div(), go.Figure()
+        return dbc.Alert([html.Span("❌ "), str(e)], color="danger"), html.Div(), go.Figure(), {'display': 'none'}
+
 
 @app.callback(
     [Output('chat-history', 'children'), Output('chat-graphs', 'children'), Output('chat-input', 'value')],
