@@ -15,10 +15,14 @@ import numpy as np
 import base64
 import io
 import uuid
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingRegressor, IsolationForest
-from sklearn. model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, r2_score, mean_squared_error
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingRegressor, GradientBoostingClassifier, IsolationForest
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import accuracy_score, r2_score, mean_squared_error, classification_report, confusion_matrix
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.svm import SVC, SVR
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -358,32 +362,110 @@ def detect_task_type(df, target_column):
     return 'classification' if (df[target_column].dtype == 'object' or unique_values < 20) else 'regression'
 
 def train_ml_model(df, target_column):
+    """Enhanced ML training with multiple models and automatic best model selection for maximum accuracy"""
     df_model = df.copy()
+    label_encoders = {}
     
+    # Encode categorical columns
     for col in df_model.columns:
-        if df_model[col].dtype == 'object': 
+        if df_model[col].dtype == 'object':
             le = LabelEncoder()
-            df_model[col] = le. fit_transform(df_model[col]. astype(str))
+            df_model[col] = le.fit_transform(df_model[col].astype(str))
+            label_encoders[col] = le
+    
+    # Handle missing values
+    df_model = df_model.fillna(df_model.median(numeric_only=True))
+    for col in df_model.columns:
+        if df_model[col].isnull().any():
+            df_model[col] = df_model[col].fillna(df_model[col].mode()[0] if not df_model[col].mode().empty else 0)
     
     X = df_model.drop(columns=[target_column])
     y = df_model[target_column]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Scale features for better performance
+    scaler = StandardScaler()
+    X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns)
+    
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42, stratify=y if detect_task_type(df, target_column) == 'classification' and y.nunique() > 1 else None)
     
     task_type = detect_task_type(df, target_column)
     
+    best_model = None
+    best_score = -float('inf')
+    best_model_name = ""
+    all_results = []
+    
     if task_type == 'classification':
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-        model.fit(X_train, y_train)
-        score = accuracy_score(y_test, model.predict(X_test))
+        # Try multiple classifiers and pick the best one
+        models = {
+            'Random Forest': RandomForestClassifier(n_estimators=200, max_depth=None, min_samples_split=2, random_state=42, n_jobs=-1),
+            'Gradient Boosting': GradientBoostingClassifier(n_estimators=150, learning_rate=0.1, max_depth=5, random_state=42),
+            'KNN': KNeighborsClassifier(n_neighbors=min(5, len(X_train)//2) if len(X_train) > 2 else 1),
+        }
+        
+        for name, model in models.items():
+            try:
+                model.fit(X_train, y_train)
+                score = accuracy_score(y_test, model.predict(X_test))
+                all_results.append({'model': name, 'score': score})
+                if score > best_score:
+                    best_score = score
+                    best_model = model
+                    best_model_name = name
+            except Exception:
+                continue
+        
         metric_name = "Accuracy"
-    else: 
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-        model.fit(X_train, y_train)
-        score = r2_score(y_test, model.predict(X_test))
+    else:
+        # Try multiple regressors and pick the best one
+        models = {
+            'Random Forest': RandomForestRegressor(n_estimators=200, max_depth=None, min_samples_split=2, random_state=42, n_jobs=-1),
+            'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, learning_rate=0.1, max_depth=5, random_state=42),
+            'Ridge': Ridge(alpha=1.0),
+        }
+        
+        for name, model in models.items():
+            try:
+                model.fit(X_train, y_train)
+                score = r2_score(y_test, model.predict(X_test))
+                all_results.append({'model': name, 'score': score})
+                if score > best_score:
+                    best_score = score
+                    best_model = model
+                    best_model_name = name
+            except Exception:
+                continue
+        
         metric_name = "R² Score"
     
-    feature_importance = pd.DataFrame({'feature': X.columns, 'importance': model.feature_importances_}).sort_values('importance', ascending=False)
-    return {'task_type': task_type, 'score': score, 'metric_name': metric_name, 'feature_importance': feature_importance}
+    # Get feature importance
+    if hasattr(best_model, 'feature_importances_'):
+        feature_importance = pd.DataFrame({
+            'feature': X.columns,
+            'importance': best_model.feature_importances_
+        }).sort_values('importance', ascending=False)
+    else:
+        # For models without feature_importances_, use coefficient-based importance
+        if hasattr(best_model, 'coef_'):
+            importances = np.abs(best_model.coef_).flatten() if len(best_model.coef_.shape) > 1 else np.abs(best_model.coef_)
+            if len(importances) == len(X.columns):
+                feature_importance = pd.DataFrame({
+                    'feature': X.columns,
+                    'importance': importances
+                }).sort_values('importance', ascending=False)
+            else:
+                feature_importance = pd.DataFrame({'feature': X.columns, 'importance': [1/len(X.columns)] * len(X.columns)})
+        else:
+            feature_importance = pd.DataFrame({'feature': X.columns, 'importance': [1/len(X.columns)] * len(X.columns)})
+    
+    return {
+        'task_type': task_type,
+        'score': best_score,
+        'metric_name': metric_name,
+        'feature_importance': feature_importance,
+        'best_model_name': best_model_name,
+        'all_results': all_results
+    }
 
 def create_feature_importance_chart(feature_importance):
     fig = px.bar(feature_importance. head(15), x='importance', y='feature', orientation='h', title='Top 15 Feature Importance', color='importance', color_continuous_scale=[[0, '#667eea'], [1, '#764ba2']])
@@ -468,6 +550,503 @@ def create_sankey_diagram(df):
     )])
     fig.update_layout(title="Data Processing Lineage", template='plotly_white', height=400, font=dict(family='Inter', color='#2c3e50'))
     return fig
+
+def generate_professional_report(df, filename="Dataset"):
+    """Generate a professional, eye-catching HTML report with all visualizations and data analysis"""
+    
+    # Get data statistics
+    total_rows = len(df)
+    total_cols = len(df.columns)
+    total_cells = total_rows * total_cols
+    missing_values = int(df.isnull().sum().sum())
+    duplicates = int(df.duplicated().sum())
+    memory_usage = df.memory_usage(deep=True).sum() / 1024**2
+    completeness = ((total_cells - missing_values) / total_cells * 100) if total_cells > 0 else 0
+    
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+    datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+    
+    # Generate timestamp
+    report_date = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+    
+    # Create visualizations as base64 images
+    charts_html = ""
+    
+    # 1. Create distribution charts for top categorical columns
+    for col in categorical_cols[:3]:
+        try:
+            value_counts = df[col].value_counts().head(10)
+            fig = px.pie(values=value_counts.values, names=value_counts.index.astype(str), 
+                        title=f"Distribution: {col}", hole=0.4,
+                        color_discrete_sequence=px.colors.qualitative.Set2)
+            fig.update_layout(template='plotly_white', height=400, font=dict(family='Inter'))
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+            charts_html += f'<div class="chart-container">{chart_html}</div>'
+        except:
+            pass
+    
+    # 2. Create histogram for top numeric columns
+    for col in numeric_cols[:3]:
+        try:
+            fig = px.histogram(df, x=col, title=f"Distribution: {col}", 
+                              color_discrete_sequence=['#667eea'])
+            fig.update_layout(template='plotly_white', height=400, font=dict(family='Inter'))
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+            charts_html += f'<div class="chart-container">{chart_html}</div>'
+        except:
+            pass
+    
+    # 3. Correlation heatmap if enough numeric columns
+    if len(numeric_cols) >= 2:
+        try:
+            corr = df[numeric_cols].corr()
+            fig = go.Figure(data=go.Heatmap(z=corr.values, x=corr.columns, y=corr.columns, 
+                                           colorscale='RdBu', zmid=0))
+            fig.update_layout(title="Correlation Heatmap", template='plotly_white', 
+                            height=500, font=dict(family='Inter'))
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+            charts_html += f'<div class="chart-container full-width">{chart_html}</div>'
+        except:
+            pass
+    
+    # Generate column details table
+    column_details = ""
+    for col in df.columns:
+        dtype = str(df[col].dtype)
+        unique = df[col].nunique()
+        missing = df[col].isnull().sum()
+        missing_pct = (missing / total_rows * 100) if total_rows > 0 else 0
+        
+        if df[col].dtype in ['float64', 'int64']:
+            stats = f"Min: {df[col].min():.2f}, Max: {df[col].max():.2f}, Mean: {df[col].mean():.2f}"
+        else:
+            top_val = df[col].mode()[0] if not df[col].mode().empty else 'N/A'
+            stats = f"Most Common: {top_val}"
+        
+        status_class = "status-good" if missing_pct < 5 else "status-warning" if missing_pct < 20 else "status-bad"
+        column_details += f'''
+        <tr>
+            <td><strong>{col}</strong></td>
+            <td><span class="badge badge-type">{dtype}</span></td>
+            <td>{unique:,}</td>
+            <td><span class="{status_class}">{missing:,} ({missing_pct:.1f}%)</span></td>
+            <td>{stats}</td>
+        </tr>'''
+    
+    # Professional HTML Report
+    html_report = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Analysis Report - {filename}</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }}
+        
+        body {{
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 50%, #667eea 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }}
+        
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+        }}
+        
+        .header {{
+            background: linear-gradient(135deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.9) 100%);
+            border-radius: 24px;
+            padding: 50px;
+            margin-bottom: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .header::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 6px;
+            background: linear-gradient(90deg, #667eea, #764ba2, #ff6b9d, #ffd93d);
+        }}
+        
+        .header-icon {{
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }}
+        
+        .header h1 {{
+            font-size: 2.8rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }}
+        
+        .header .subtitle {{
+            font-size: 1.2rem;
+            color: #666;
+            margin-bottom: 5px;
+        }}
+        
+        .header .date {{
+            font-size: 0.95rem;
+            color: #888;
+        }}
+        
+        .kpi-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }}
+        
+        .kpi-card {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 20px;
+            padding: 30px;
+            text-align: center;
+            box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
+            transition: transform 0.3s ease;
+        }}
+        
+        .kpi-card:hover {{
+            transform: translateY(-5px);
+        }}
+        
+        .kpi-card.success {{
+            background: linear-gradient(135deg, #00d9a5 0%, #00b894 100%);
+            box-shadow: 0 10px 40px rgba(0, 217, 165, 0.4);
+        }}
+        
+        .kpi-card.warning {{
+            background: linear-gradient(135deg, #ffd93d 0%, #f39c12 100%);
+            box-shadow: 0 10px 40px rgba(255, 217, 61, 0.4);
+        }}
+        
+        .kpi-card.info {{
+            background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
+            box-shadow: 0 10px 40px rgba(116, 185, 255, 0.4);
+        }}
+        
+        .kpi-icon {{
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }}
+        
+        .kpi-value {{
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: white;
+            margin-bottom: 5px;
+        }}
+        
+        .kpi-label {{
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.9);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }}
+        
+        .section {{
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            padding: 40px;
+            margin-bottom: 30px;
+            box-shadow: 0 15px 50px rgba(0,0,0,0.2);
+        }}
+        
+        .section-title {{
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 3px solid;
+            border-image: linear-gradient(90deg, #667eea, #764ba2) 1;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }}
+        
+        .section-title span {{
+            font-size: 1.5rem;
+        }}
+        
+        .charts-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+        }}
+        
+        .chart-container {{
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+            border: 1px solid #eee;
+        }}
+        
+        .chart-container.full-width {{
+            grid-column: 1 / -1;
+        }}
+        
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }}
+        
+        th {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        
+        th:first-child {{
+            border-radius: 10px 0 0 0;
+        }}
+        
+        th:last-child {{
+            border-radius: 0 10px 0 0;
+        }}
+        
+        td {{
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            color: #333;
+        }}
+        
+        tr:hover {{
+            background: #f8f9ff;
+        }}
+        
+        .badge {{
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }}
+        
+        .badge-type {{
+            background: linear-gradient(135deg, #e8f4fd 0%, #d4e8f7 100%);
+            color: #0984e3;
+        }}
+        
+        .status-good {{
+            color: #00b894;
+            font-weight: 600;
+        }}
+        
+        .status-warning {{
+            color: #f39c12;
+            font-weight: 600;
+        }}
+        
+        .status-bad {{
+            color: #e74c3c;
+            font-weight: 600;
+        }}
+        
+        .quality-meter {{
+            background: #eee;
+            border-radius: 10px;
+            height: 20px;
+            overflow: hidden;
+            margin: 20px 0;
+        }}
+        
+        .quality-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 10px;
+            transition: width 1s ease;
+        }}
+        
+        .footer {{
+            text-align: center;
+            padding: 30px;
+            color: rgba(255,255,255,0.8);
+            font-size: 0.9rem;
+        }}
+        
+        .footer strong {{
+            color: white;
+        }}
+        
+        .summary-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }}
+        
+        .summary-item {{
+            background: linear-gradient(135deg, #f8f9ff 0%, #fff 100%);
+            border-radius: 12px;
+            padding: 20px;
+            border-left: 4px solid #667eea;
+        }}
+        
+        .summary-item h4 {{
+            color: #667eea;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        
+        .summary-item p {{
+            color: #2c3e50;
+            font-size: 1.1rem;
+            font-weight: 600;
+        }}
+        
+        @media print {{
+            body {{
+                background: white;
+                padding: 20px;
+            }}
+            .kpi-card, .section {{
+                box-shadow: none;
+                border: 1px solid #ddd;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="header-icon">📊</div>
+            <h1>Professional Data Analysis Report</h1>
+            <p class="subtitle">Comprehensive Analysis of <strong>{filename}</strong></p>
+            <p class="date">Generated on {report_date}</p>
+        </div>
+        
+        <!-- Executive Summary KPIs -->
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-icon">📊</div>
+                <div class="kpi-value">{total_rows:,}</div>
+                <div class="kpi-label">Total Records</div>
+            </div>
+            <div class="kpi-card info">
+                <div class="kpi-icon">📋</div>
+                <div class="kpi-value">{total_cols}</div>
+                <div class="kpi-label">Data Features</div>
+            </div>
+            <div class="kpi-card success">
+                <div class="kpi-icon">✅</div>
+                <div class="kpi-value">{completeness:.1f}%</div>
+                <div class="kpi-label">Data Completeness</div>
+            </div>
+            <div class="kpi-card warning">
+                <div class="kpi-icon">⚠️</div>
+                <div class="kpi-value">{missing_values:,}</div>
+                <div class="kpi-label">Missing Values</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-icon">🔄</div>
+                <div class="kpi-value">{duplicates:,}</div>
+                <div class="kpi-label">Duplicate Rows</div>
+            </div>
+            <div class="kpi-card info">
+                <div class="kpi-icon">💾</div>
+                <div class="kpi-value">{memory_usage:.2f} MB</div>
+                <div class="kpi-label">Memory Usage</div>
+            </div>
+        </div>
+        
+        <!-- Data Quality Section -->
+        <div class="section">
+            <h2 class="section-title"><span>🎯</span> Data Quality Score</h2>
+            <div class="quality-meter">
+                <div class="quality-fill" style="width: {completeness}%;"></div>
+            </div>
+            <p style="text-align: center; color: #666; margin-top: 10px;">
+                Your data quality score is <strong style="color: #667eea; font-size: 1.2rem;">{completeness:.1f}%</strong>
+            </p>
+            
+            <div class="summary-grid">
+                <div class="summary-item">
+                    <h4>Numeric Columns</h4>
+                    <p>{len(numeric_cols)} features</p>
+                </div>
+                <div class="summary-item">
+                    <h4>Categorical Columns</h4>
+                    <p>{len(categorical_cols)} features</p>
+                </div>
+                <div class="summary-item">
+                    <h4>DateTime Columns</h4>
+                    <p>{len(datetime_cols)} features</p>
+                </div>
+                <div class="summary-item">
+                    <h4>Total Cells</h4>
+                    <p>{total_cells:,} data points</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Visualizations Section -->
+        <div class="section">
+            <h2 class="section-title"><span>📈</span> Data Visualizations</h2>
+            <div class="charts-grid">
+                {charts_html}
+            </div>
+        </div>
+        
+        <!-- Column Details Section -->
+        <div class="section">
+            <h2 class="section-title"><span>📋</span> Column Analysis</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Column Name</th>
+                        <th>Data Type</th>
+                        <th>Unique Values</th>
+                        <th>Missing</th>
+                        <th>Statistics</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {column_details}
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            <p>🤖 Generated by <strong>AI Data Analyst</strong> | Professional Data Analysis Platform</p>
+            <p style="margin-top: 5px; font-size: 0.8rem;">© {datetime.now().year} All Rights Reserved</p>
+        </div>
+    </div>
+</body>
+</html>'''
+    
+    return html_report
 
 def parse_datagpt_query(query, df, filename=""):
     """ULTRA-SMART DataGPT - Handles ALL question variations with intelligent matching"""
@@ -965,13 +1544,14 @@ Type **"help"** for all capabilities!  🤔
 def create_navbar():
     return dbc.Navbar(
         dbc.Container([
-            dbc.Row([dbc.Col([html. Div([html. Div("🤖", style={'fontSize': '1.8rem', 'marginRight': '10px'}), html.Span("AI Data Analyst", className="brand-logo")], style={'display': 'flex', 'alignItems': 'center'})], width="auto")], align="center", className="g-0 w-100"),
+            dbc.Row([dbc.Col([html.Div([html.Div("🤖", style={'fontSize': '1.8rem', 'marginRight': '10px'}), html.Span("AI Data Analyst", className="brand-logo")], style={'display': 'flex', 'alignItems': 'center'})], width="auto")], align="center", className="g-0 w-100"),
             dbc.Row([dbc.Col([dbc.Nav([
                 dbc.NavItem(dbc.NavLink([html.Span("🏠 "), "Dashboard"], href="/", className="nav-link")),
-                dbc.NavItem(dbc.NavLink([html. Span("🧹 "), "Cleaning"], href="/cleaning", className="nav-link")),
+                dbc.NavItem(dbc.NavLink([html.Span("🧹 "), "Cleaning"], href="/cleaning", className="nav-link")),
                 dbc.NavItem(dbc.NavLink([html.Span("📊 "), "Visualization"], href="/visualization", className="nav-link")),
                 dbc.NavItem(dbc.NavLink([html.Span("🧠 "), "AutoML"], href="/automl", className="nav-link")),
                 dbc.NavItem(dbc.NavLink([html.Span("💬 "), "DataGPT"], href="/datagpt", className="nav-link")),
+                dbc.NavItem(dbc.NavLink([html.Span("📥 "), "Export"], href="/export", className="nav-link")),
             ], navbar=True, className="ms-auto")])], className="g-0 w-100 justify-content-end"),
         ], fluid=True),
         className="custom-nav",
@@ -1049,15 +1629,59 @@ def create_datagpt_layout():
     return html.Div([
         html.H2("💬 DataGPT - Answers 1000+ Questions!", className="section-title mb-4"),
         dbc.Row([dbc.Col([html.Div([
-            html. Div([
-                html. Div(id="chat-history", className="chat-container", style={'minHeight': '450px', 'marginBottom': '20px'}),
+            html.Div([
+                html.Div(id="chat-history", className="chat-container", style={'minHeight': '450px', 'marginBottom': '20px'}),
                 dbc.InputGroup([
-                    dbc. Input(id="chat-input", placeholder="Ask ANYTHING!  Try: 'what is this about?', 'show columns', 'analyze [column]'", type="text"),
+                    dbc.Input(id="chat-input", placeholder="Ask ANYTHING!  Try: 'what is this about?', 'show columns', 'analyze [column]'", type="text"),
                     dbc.Button([html.Span("📤")], id="btn-send-chat", className="btn-custom")
                 ])
             ])
         ], className="glass-card p-4")])]),
         html.Div(id="chat-graphs")
+    ])
+
+def create_export_layout():
+    return html.Div([
+        html.H2("📥 Export Professional Report", className="section-title mb-4"),
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.Div([
+                        html.Div("📊", style={'fontSize': '4rem', 'marginBottom': '20px', 'textAlign': 'center'}),
+                        html.H4("Export Cleaned Dataset", style={'color': '#2c3e50', 'textAlign': 'center'}),
+                        html.P("Download your cleaned data as a CSV file", style={'color': '#666', 'textAlign': 'center', 'marginBottom': '25px'}),
+                        dbc.Button([html.Span("📥 "), "Download CSV"], id="btn-export-csv", size="lg", className="btn-custom w-100"),
+                        html.Div(id="export-csv-status", className="mt-3")
+                    ], className="glass-card p-4", style={'height': '100%'})
+                ])
+            ], md=6, className="mb-4"),
+            dbc.Col([
+                html.Div([
+                    html.Div([
+                        html.Div("📑", style={'fontSize': '4rem', 'marginBottom': '20px', 'textAlign': 'center'}),
+                        html.H4("Export Professional Report", style={'color': '#2c3e50', 'textAlign': 'center'}),
+                        html.P("Generate a comprehensive HTML report with charts and analysis", style={'color': '#666', 'textAlign': 'center', 'marginBottom': '25px'}),
+                        dbc.Button([html.Span("📑 "), "Generate Report"], id="btn-export-report", size="lg", className="btn-custom w-100"),
+                        html.Div(id="export-report-status", className="mt-3")
+                    ], className="glass-card p-4", style={'height': '100%'})
+                ])
+            ], md=6, className="mb-4")
+        ]),
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.H4("📋 Export Preview", style={'color': '#2c3e50', 'marginBottom': '20px'}),
+                    html.Div(id="export-preview", children=[
+                        html.Div([
+                            html.Div("👆", style={'fontSize': '3rem', 'marginBottom': '15px'}),
+                            html.P("Click on an export button above to preview and download your data", style={'color': '#666', 'textAlign': 'center'})
+                        ], style={'textAlign': 'center', 'padding': '50px'})
+                    ])
+                ], className="glass-card p-4")
+            ])
+        ]),
+        dcc.Download(id="download-csv"),
+        dcc.Download(id="download-report")
     ])
 
 # =============================================================================
@@ -1100,11 +1724,12 @@ def upload_file(contents, filename, session_id):
 )
 def display_page(pathname, data_loaded, session_id):
     if not data_loaded or session_id not in SERVER_DATA_CACHE:
-        return html. Div([html.Div("⚠️", style={'fontSize': '5rem'}), html.H3("Please upload dataset", style={'color': '#2c3e50'})], style={'textAlign': 'center', 'padding': '100px'})
+        return html.Div([html.Div("⚠️", style={'fontSize': '5rem'}), html.H3("Please upload dataset", style={'color': '#2c3e50'})], style={'textAlign': 'center', 'padding': '100px'})
     if pathname == '/cleaning':  return create_cleaning_layout()
     elif pathname == '/visualization': return create_visualization_layout()
     elif pathname == '/automl': return create_automl_layout()
     elif pathname == '/datagpt': return create_datagpt_layout()
+    elif pathname == '/export': return create_export_layout()
     else: return create_dashboard_layout()
 
 @app.callback(
@@ -1214,7 +1839,48 @@ def train_model_cb(n, tc, sid):
     df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
     try:
         r = train_ml_model(df, tc)
-        return dbc.Alert([html.Span("✅ "), "Trained!"], color="success"), html.Div([html.H5(f"🎯 {r['task_type'].title()}", style={'color': '#2c3e50'}), html.Div([html.Span(f"{r['metric_name']}: "), html.Span(f"{r['score']:.4f}", style={'fontSize': '2rem', 'color': '#667eea'})])]), create_feature_importance_chart(r['feature_importance']), {'display': 'block'}
+        
+        # Build model comparison table if multiple models were tested
+        model_comparison = []
+        if 'all_results' in r and len(r['all_results']) > 1:
+            for res in sorted(r['all_results'], key=lambda x: x['score'], reverse=True):
+                is_best = res['model'] == r.get('best_model_name', '')
+                model_comparison.append(
+                    html.Tr([
+                        html.Td([html.Strong(res['model']) if is_best else res['model'], html.Span(" ⭐", style={'color': '#ffd93d'}) if is_best else ""], style={'color': '#667eea' if is_best else '#333'}),
+                        html.Td(f"{res['score']:.4f}", style={'fontWeight': '700' if is_best else '400', 'color': '#00b894' if is_best else '#333'})
+                    ])
+                )
+        
+        results_content = [
+            html.H5(f"🎯 {r['task_type'].title()}", style={'color': '#2c3e50', 'marginBottom': '15px'}),
+            html.Div([
+                html.Span(f"Best Model: ", style={'color': '#666'}),
+                html.Span(f"{r.get('best_model_name', 'Random Forest')}", style={'fontSize': '1.2rem', 'color': '#764ba2', 'fontWeight': '600'})
+            ], style={'marginBottom': '10px'}),
+            html.Div([
+                html.Span(f"{r['metric_name']}: "),
+                html.Span(f"{r['score']:.4f}", style={'fontSize': '2rem', 'color': '#667eea', 'fontWeight': '700'})
+            ])
+        ]
+        
+        # Add model comparison table if available
+        if model_comparison:
+            results_content.extend([
+                html.Hr(style={'margin': '20px 0'}),
+                html.H6("📊 Model Comparison", style={'color': '#2c3e50', 'marginBottom': '10px'}),
+                html.Table([
+                    html.Thead(html.Tr([html.Th("Model"), html.Th(r['metric_name'])], style={'backgroundColor': '#f8f9ff'})),
+                    html.Tbody(model_comparison)
+                ], style={'width': '100%', 'borderCollapse': 'collapse', 'fontSize': '0.9rem'})
+            ])
+        
+        return (
+            dbc.Alert([html.Span("✅ "), f"Training Complete! Best: {r.get('best_model_name', 'Model')}"], color="success"),
+            html.Div(results_content),
+            create_feature_importance_chart(r['feature_importance']),
+            {'display': 'block'}
+        )
     except Exception as e:
         return dbc.Alert([html.Span("❌ "), str(e)], color="danger"), html.Div(), go.Figure(), {'display': 'none'}
 
@@ -1242,6 +1908,110 @@ def chat(n, ui, ch, sid):
     else:
         graphs = html.Div()
     return ch, graphs, ""
+
+# Export CSV callback
+@app.callback(
+    [Output('download-csv', 'data'), Output('export-csv-status', 'children'), Output('export-preview', 'children', allow_duplicate=True)],
+    [Input('btn-export-csv', 'n_clicks')],
+    [State('session-id', 'data')],
+    prevent_initial_call=True
+)
+def export_csv(n, sid):
+    if n is None or sid not in SERVER_DATA_CACHE:
+        raise PreventUpdate
+    
+    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    filename = SERVER_DATA_CACHE.get(sid, {}).get('filename', 'data.csv')
+    
+    # Create preview
+    preview = html.Div([
+        html.H5("✅ CSV Export Ready", style={'color': '#00b894', 'marginBottom': '15px'}),
+        html.P(f"Dataset: {filename}", style={'color': '#666'}),
+        html.P(f"Rows: {len(df):,} | Columns: {len(df.columns)}", style={'color': '#666', 'marginBottom': '15px'}),
+        html.Div([
+            dash_table.DataTable(
+                data=df.head(5).to_dict('records'),
+                columns=[{'name': c, 'id': c} for c in df.columns],
+                style_cell={'textAlign': 'left', 'padding': '10px', 'backgroundColor': 'white', 'color': '#333', 'fontSize': '0.85rem'},
+                style_header={'backgroundColor': '#667eea', 'color': 'white', 'fontWeight': '600'}
+            )
+        ], style={'overflowX': 'auto'})
+    ])
+    
+    # Export file
+    export_filename = filename.replace('.csv', '_cleaned.csv') if '.csv' in filename else f"{filename}_cleaned.csv"
+    
+    return dcc.send_data_frame(df.to_csv, export_filename, index=False), dbc.Alert([html.Span("✅ "), "CSV downloaded!"], color="success"), preview
+
+# Export Report callback
+@app.callback(
+    [Output('download-report', 'data'), Output('export-report-status', 'children'), Output('export-preview', 'children')],
+    [Input('btn-export-report', 'n_clicks')],
+    [State('session-id', 'data')],
+    prevent_initial_call=True
+)
+def export_report(n, sid):
+    if n is None or sid not in SERVER_DATA_CACHE:
+        raise PreventUpdate
+    
+    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    filename = SERVER_DATA_CACHE.get(sid, {}).get('filename', 'Dataset')
+    
+    # Generate professional report
+    html_report = generate_professional_report(df, filename)
+    
+    # Create preview
+    stats = get_health_stats(df)
+    completeness = ((df.shape[0] * df.shape[1] - stats['missing']) / (df.shape[0] * df.shape[1]) * 100) if df.shape[0] * df.shape[1] > 0 else 0
+    
+    preview = html.Div([
+        html.H5("✅ Professional Report Generated", style={'color': '#00b894', 'marginBottom': '20px'}),
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.Div("📊", style={'fontSize': '2rem', 'marginBottom': '10px'}),
+                    html.H6(f"{len(df):,}", style={'color': '#667eea', 'fontSize': '1.5rem', 'fontWeight': '700'}),
+                    html.P("Records", style={'color': '#666', 'fontSize': '0.85rem'})
+                ], style={'textAlign': 'center', 'padding': '15px', 'background': '#f8f9ff', 'borderRadius': '10px'})
+            ], md=3),
+            dbc.Col([
+                html.Div([
+                    html.Div("📋", style={'fontSize': '2rem', 'marginBottom': '10px'}),
+                    html.H6(f"{len(df.columns)}", style={'color': '#667eea', 'fontSize': '1.5rem', 'fontWeight': '700'}),
+                    html.P("Features", style={'color': '#666', 'fontSize': '0.85rem'})
+                ], style={'textAlign': 'center', 'padding': '15px', 'background': '#f8f9ff', 'borderRadius': '10px'})
+            ], md=3),
+            dbc.Col([
+                html.Div([
+                    html.Div("✅", style={'fontSize': '2rem', 'marginBottom': '10px'}),
+                    html.H6(f"{completeness:.1f}%", style={'color': '#00b894', 'fontSize': '1.5rem', 'fontWeight': '700'}),
+                    html.P("Quality", style={'color': '#666', 'fontSize': '0.85rem'})
+                ], style={'textAlign': 'center', 'padding': '15px', 'background': '#f0fff4', 'borderRadius': '10px'})
+            ], md=3),
+            dbc.Col([
+                html.Div([
+                    html.Div("📈", style={'fontSize': '2rem', 'marginBottom': '10px'}),
+                    html.H6(f"{len(df.select_dtypes(include=[np.number]).columns)}", style={'color': '#764ba2', 'fontSize': '1.5rem', 'fontWeight': '700'}),
+                    html.P("Numeric Cols", style={'color': '#666', 'fontSize': '0.85rem'})
+                ], style={'textAlign': 'center', 'padding': '15px', 'background': '#faf5ff', 'borderRadius': '10px'})
+            ], md=3),
+        ]),
+        html.Div([
+            html.P("📑 Your professional HTML report includes:", style={'color': '#2c3e50', 'fontWeight': '600', 'marginTop': '20px', 'marginBottom': '10px'}),
+            html.Ul([
+                html.Li("Executive summary with key metrics"),
+                html.Li("Data quality analysis"),
+                html.Li("Interactive visualizations (pie charts, histograms, correlation heatmap)"),
+                html.Li("Detailed column analysis"),
+                html.Li("Professional styling ready for presentation")
+            ], style={'color': '#666', 'paddingLeft': '20px'})
+        ])
+    ])
+    
+    # Export file
+    report_filename = filename.replace('.csv', '_report.html') if '.csv' in filename else f"{filename}_report.html"
+    
+    return dict(content=html_report, filename=report_filename, type='text/html'), dbc.Alert([html.Span("✅ "), "Report downloaded!"], color="success"), preview
 
 # =============================================================================
 # RUN APPLICATION
