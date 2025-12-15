@@ -207,6 +207,16 @@ CUSTOM_STYLE = """
     
     label { color: #2c3e50 !important; font-weight: 600 !important; }
     
+    /* Fix for AutoML scrolling issue - prevent scroll anchor behavior */
+    #automl-results-container {
+        overflow-anchor: none !important;
+    }
+    
+    /* Prevent graphs from causing scroll jumps */
+    .js-plotly-plot, .plotly {
+        overflow: hidden !important;
+    }
+    
     /* ========== REMOVE ALL DEBUG/DEV ICONS ========== */
     ._dash-undo-redo, 
     ._dash-loading, 
@@ -1604,9 +1614,9 @@ def create_cleaning_layout():
 def create_visualization_layout():
     return html.Div([
         html.H2("📊 Data Visualization", className="section-title mb-4"),
-        dbc.Row([dbc.Col([html.Div([html.H5("📊 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="pie-column-selector", className="mb-3"), dcc.Graph(id="pie-chart", style={'height': '400px'})], className="glass-card p-4 mb-4")])]),
+        dbc.Row([dbc.Col([html.Div([html.H5("📊 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="pie-column-selector", className="mb-3", searchable=False, clearable=False, placeholder="Select a column..."), dcc.Graph(id="pie-chart", style={'height': '400px'})], className="glass-card p-4 mb-4")])]),
         dbc.Row([dbc.Col([html.Div([html.H5("🔥 Correlation", style={'color': '#2c3e50'}), dcc.Graph(id="correlation-heatmap", style={'height': '500px'})], className="glass-card p-4 mb-4")])]),
-        dbc.Row([dbc.Col([html.Div([html.H5("📈 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="dist-column-selector", className="mb-3"), dcc.Graph(id="distribution-plot", style={'height': '500px'})], className="glass-card p-4")])])
+        dbc.Row([dbc.Col([html.Div([html.H5("📈 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="dist-column-selector", className="mb-3", searchable=False, clearable=False, placeholder="Select a column..."), dcc.Graph(id="distribution-plot", style={'height': '500px'})], className="glass-card p-4")])])
     ])
 
 def create_automl_layout():
@@ -1615,13 +1625,13 @@ def create_automl_layout():
         dbc.Row([dbc.Col([html.Div([
             html.H4("🤖 Automated ML", style={'color': '#2c3e50'}),
             html.P("Select target and train model", style={'color': '#666'}),
-            dcc.Dropdown(id="target-column-selector", className="mb-3"),
+            dcc.Dropdown(id="target-column-selector", className="mb-3", searchable=False, clearable=False, placeholder="Select target column..."),
             dbc.Button([html.Span("🚀 "), "Train Model"], id="btn-train", size="lg", className="btn-custom w-100"),
             html.Div(id="training-status", className="mt-4")
         ], className="glass-card p-4 mb-4")])]),
         html.Div(id="automl-results-container", children=[
-            dbc.Row([dbc.Col([html.Div([html.Div(id="model-results")], className="glass-card p-4")])]),
-            dbc.Row([dbc.Col([html.Div([dcc.Graph(id="feature-importance-chart")], className="glass-card p-4")])])
+            dbc.Row([dbc.Col([html.Div([html.Div(id="model-results")], className="glass-card p-4")], className="mb-4")]),
+            dbc.Row([dbc.Col([html.Div([dcc.Graph(id="feature-importance-chart", config={'displayModeBar': True, 'scrollZoom': False}, style={'height': '500px'})], className="glass-card p-4")])])
         ], style={'display': 'none'})
     ])
 
