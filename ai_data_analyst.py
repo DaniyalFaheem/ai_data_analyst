@@ -538,8 +538,8 @@ def parse_datagpt_query(query, df, filename=""):
             # Remove common suffixes for matching
             if word.endswith('ies'):
                 return [word, word[:-3] + 'y']  # categories -> category
-            elif word.endswith('es'):
-                return [word, word[:-2], word[:-1]]  # prices -> price, boxes -> box
+            elif word.endswith('es') and len(word) > 3:
+                return [word, word[:-2]]  # boxes -> box, prices -> pric (but also catches 'es' suffix)
             elif word.endswith('s') and len(word) > 3:
                 return [word, word[:-1]]  # prices -> price
             return [word]
@@ -892,18 +892,29 @@ def parse_datagpt_query(query, df, filename=""):
         
         # DEFAULT: Column found but no specific intent - provide quick summary
         if df[col].dtype in ['float64', 'int64']:
+            col_data = df[col].dropna()
+            if len(col_data) == 0:
+                return f"""📊 **{col}** Quick Summary:
+- Type: Numerical
+- All values are missing (NaN)
+
+💡 Try: "show missing data" for more details!
+""", None
             return f"""📊 **{col}** Quick Summary:
-- Mean: **{df[col].mean():.2f}**
-- Median: {df[col].median():.2f}
-- Min: {df[col].min():.2f}
-- Max: {df[col].max():.2f}
-- Unique values: {df[col].nunique():,}
+- Mean: **{col_data.mean():.2f}**
+- Median: {col_data.median():.2f}
+- Min: {col_data.min():.2f}
+- Max: {col_data.max():.2f}
+- Unique values: {col_data.nunique():,}
 
 💡 Try: "average {col}", "analyze {col}", "show unique {col}" for more details!
 """, None
         else:
             top_3 = df[col].value_counts().head(3)
-            top_vals = ', '.join([f"**{v}** ({c:,})" for v, c in top_3.items()])
+            if len(top_3) == 0:
+                top_vals = "No values available"
+            else:
+                top_vals = ', '.join([f"**{v}** ({c:,})" for v, c in top_3.items()])
             return f"""📊 **{col}** Quick Summary:
 - Type: {df[col].dtype}
 - Unique values: **{df[col].nunique():,}**
