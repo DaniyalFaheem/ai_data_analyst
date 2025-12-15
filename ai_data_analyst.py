@@ -321,7 +321,7 @@ def create_smart_pie_chart(df, column):
             labels = [str(x) for x in data.index]
             title = f"{column} Distribution"
         
-        fig = px.pie(values=data.values, names=labels, title=title, color_discrete_sequence=px.colors.sequential.Purples, hole=0.4)
+        fig = px.pie(values=data.values, names=labels, title=title, color_discrete_sequence=px.colors.qualitative.Set2, hole=0.4)
         fig.update_layout(template='plotly_white', paper_bgcolor='rgba(0,0,0,0)', font=dict(family='Inter', color='#2c3e50'))
         return fig
     except: 
