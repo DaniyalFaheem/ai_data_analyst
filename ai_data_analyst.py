@@ -1016,17 +1016,17 @@ def create_cleaning_layout():
             html.Div(id="cleaning-status", className="mt-4")
         ], className="glass-card p-4 mb-4")])]),
         dbc.Row([
-            dbc.Col([html.Div([html.H5("Before", style={'color': '#2c3e50'}), dcc.Graph(id="health-before")], className="glass-card p-4")], md=6),
-            dbc.Col([html. Div([html.H5("After", style={'color': '#2c3e50'}), dcc.Graph(id="health-after")], className="glass-card p-4")], md=6)
+            dbc.Col([html.Div([html.H5("Before", style={'color': '#2c3e50'}), dcc.Graph(id="health-before", style={'height': '300px'})], className="glass-card p-4")], md=6),
+            dbc.Col([html.Div([html.H5("After", style={'color': '#2c3e50'}), dcc.Graph(id="health-after", style={'height': '300px'})], className="glass-card p-4")], md=6)
         ])
     ])
 
 def create_visualization_layout():
     return html.Div([
         html.H2("📊 Data Visualization", className="section-title mb-4"),
-        dbc.Row([dbc.Col([html.Div([html.H5("📊 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="pie-column-selector", className="mb-3"), dcc.Graph(id="pie-chart")], className="glass-card p-4 mb-4")])]),
-        dbc.Row([dbc.Col([html.Div([html.H5("🔥 Correlation", style={'color': '#2c3e50'}), dcc.Graph(id="correlation-heatmap")], className="glass-card p-4 mb-4")])]),
-        dbc.Row([dbc.Col([html. Div([html.H5("📈 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="dist-column-selector", className="mb-3"), dcc.Graph(id="distribution-plot")], className="glass-card p-4")])])
+        dbc.Row([dbc.Col([html.Div([html.H5("📊 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="pie-column-selector", className="mb-3"), dcc.Graph(id="pie-chart", style={'height': '400px'})], className="glass-card p-4 mb-4")])]),
+        dbc.Row([dbc.Col([html.Div([html.H5("🔥 Correlation", style={'color': '#2c3e50'}), dcc.Graph(id="correlation-heatmap", style={'height': '500px'})], className="glass-card p-4 mb-4")])]),
+        dbc.Row([dbc.Col([html.Div([html.H5("📈 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="dist-column-selector", className="mb-3"), dcc.Graph(id="distribution-plot", style={'height': '500px'})], className="glass-card p-4")])])
     ])
 
 def create_automl_layout():
