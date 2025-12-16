@@ -372,7 +372,10 @@ def detect_task_type(df, target_column):
     return 'classification' if (df[target_column].dtype == 'object' or unique_values < 20) else 'regression'
 
 def train_ml_model(df, target_column):
-    """Enhanced ML training with multiple models and automatic best model selection for maximum accuracy"""
+    """Enhanced ML training with multiple models and automatic best model selection.
+    
+    Optimized for fast training with reduced n_estimators while maintaining good accuracy.
+    """
     df_model = df.copy()
     label_encoders = {}
     
@@ -407,9 +410,10 @@ def train_ml_model(df, target_column):
     
     if task_type == 'classification':
         # Try multiple classifiers and pick the best one
+        # Optimized for speed with reduced n_estimators
         models = {
-            'Random Forest': RandomForestClassifier(n_estimators=200, max_depth=None, min_samples_split=2, random_state=42, n_jobs=-1),
-            'Gradient Boosting': GradientBoostingClassifier(n_estimators=150, learning_rate=0.1, max_depth=5, random_state=42),
+            'Random Forest': RandomForestClassifier(n_estimators=50, max_depth=10, min_samples_split=5, random_state=42, n_jobs=-1),
+            'Gradient Boosting': GradientBoostingClassifier(n_estimators=50, learning_rate=0.1, max_depth=5, random_state=42),
             'KNN': KNeighborsClassifier(n_neighbors=min(5, len(X_train)//2) if len(X_train) > 2 else 1),
         }
         
@@ -428,9 +432,10 @@ def train_ml_model(df, target_column):
         metric_name = "Accuracy"
     else:
         # Try multiple regressors and pick the best one
+        # Optimized for speed with reduced n_estimators
         models = {
-            'Random Forest': RandomForestRegressor(n_estimators=200, max_depth=None, min_samples_split=2, random_state=42, n_jobs=-1),
-            'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, learning_rate=0.1, max_depth=5, random_state=42),
+            'Random Forest': RandomForestRegressor(n_estimators=50, max_depth=10, min_samples_split=5, random_state=42, n_jobs=-1),
+            'Gradient Boosting': GradientBoostingRegressor(n_estimators=50, learning_rate=0.1, max_depth=5, random_state=42),
             'Ridge': Ridge(alpha=1.0),
         }
         
@@ -515,7 +520,7 @@ def perform_forecasting(df, column, periods=10):
     X = data[['index']]
     y = data[column]
     
-    model = GradientBoostingRegressor(n_estimators=100, random_state=42)
+    model = GradientBoostingRegressor(n_estimators=30, random_state=42)
     model.fit(X, y)
     
     future_indices = np.arange(len(data), len(data) + periods).reshape(-1, 1)
@@ -529,7 +534,7 @@ def perform_forecasting(df, column, periods=10):
     mse = mean_squared_error(y[-10:], model.predict(X[-10:]))
     return fig, f"Forecast RMSE: {np.sqrt(mse):.2f}"
 
-def monte_carlo_simulation(df, column, n_simulations=1000):
+def monte_carlo_simulation(df, column, n_simulations=200):
     if df[column].dtype not in ['float64', 'int64']:
         return None, "Column must be numerical"
     
