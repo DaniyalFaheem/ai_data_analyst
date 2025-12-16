@@ -1298,7 +1298,7 @@ def parse_datagpt_query(query, df, filename=""):
 **Data Quality:**
 - Complete Rows: {df.dropna().shape[0]:,} ({df.dropna().shape[0]/df.shape[0]*100:.1f}%)
 - Missing Values: {df.isnull().sum().sum():,}
-- Duplicates: {df. duplicated().sum():,}
+- Duplicates: {df.duplicated().sum():,}
 
 **Column Types:**
 - Numerical: {len(num_cols)}
@@ -1741,7 +1741,7 @@ def upload_file(contents, filename, session_id):
         raise PreventUpdate
     df = parse_upload_contents(contents, filename)
     if df is None:
-        return dbc.Alert([html. Span("❌ "), "Error"], color="danger"), session_id, False
+        return dbc.Alert([html.Span("❌ "), "Error"], color="danger"), session_id, False
     SERVER_DATA_CACHE[session_id] = {'original':  df, 'cleaned': None, 'filename': filename}
     return dbc.Alert([html.Span("✅ "), f"Uploaded:  {filename} ({df.shape[0]:,} rows)"], color="success"), session_id, True
 
