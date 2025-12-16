@@ -1786,6 +1786,8 @@ def clean_data(n, sid):
 def update_pie_sel(p, d, sid):
     if p != '/visualization' or not d or sid not in SERVER_DATA_CACHE:  raise PreventUpdate
     df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    if df is None or len(df.columns) == 0:
+        return [], None
     return [{'label': c, 'value': c} for c in df.columns], df.columns[0]
 
 @app.callback(
@@ -1816,6 +1818,8 @@ def update_corr(p, d, sid):
 def update_dist_sel(p, d, sid):
     if p != '/visualization' or not d or sid not in SERVER_DATA_CACHE: raise PreventUpdate
     df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    if df is None or len(df.columns) == 0:
+        return [], None
     nc = df.select_dtypes(include=[np.number]).columns.tolist()
     return [{'label': c, 'value':  c} for c in nc], nc[0] if nc else None
 
@@ -1837,7 +1841,9 @@ def update_dist(c, sid):
 def update_target_sel(p, d, sid):
     if p != '/automl' or not d or sid not in SERVER_DATA_CACHE:  raise PreventUpdate
     df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
-    return [{'label': c, 'value':  c} for c in df.columns], None
+    if df is None or len(df.columns) == 0:
+        return [], None
+    return [{'label': c, 'value':  c} for c in df.columns], df.columns[0]
 
 @app.callback(
     [Output('training-status', 'children'), Output('model-results', 'children'), Output('feature-importance-chart', 'figure'), Output('automl-results-container', 'style')],
