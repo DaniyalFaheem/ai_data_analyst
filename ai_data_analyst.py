@@ -399,6 +399,11 @@ def train_ml_model(df, target_column):
             df_model[col] = le.fit_transform(df_model[col].astype(str))
             label_encoders[col] = le
     
+    # Convert datetime columns to numeric (Unix timestamp in seconds)
+    for col in df_model.columns:
+        if pd.api.types.is_datetime64_any_dtype(df_model[col]):
+            df_model[col] = df_model[col].astype('int64') // 10**9
+    
     # Handle missing values
     df_model = df_model.fillna(df_model.median(numeric_only=True))
     for col in df_model.columns:
