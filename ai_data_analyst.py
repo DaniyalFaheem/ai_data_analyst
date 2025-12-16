@@ -334,7 +334,7 @@ def create_smart_pie_chart(df, column):
             try:
                 binned = pd.cut(df[column]. dropna(), bins=10)
                 data = binned.value_counts().head(10)
-                labels = [f"{interval. left:. 2f} - {interval.right:.2f}" for interval in data.index]
+                labels = [f"{interval.left:.2f} - {interval.right:.2f}" for interval in data.index]
             except:
                 data = df[column].value_counts().head(10)
                 labels = [str(x) for x in data.index]
@@ -1200,7 +1200,7 @@ def parse_datagpt_query(query, df, filename=""):
     
     # ========== GREETINGS ==========
     if any(w in q for w in ['hello', 'hi', 'hey', 'good morning', 'good afternoon']):
-        return f"""👋 **Hello!  I'm DataGPT! ** Analyzing **{filename or 'your dataset'}** with **{df.shape[0]: ,} rows** × **{df.shape[1]} columns**. 
+        return f"""👋 **Hello!  I'm DataGPT! ** Analyzing **{filename or 'your dataset'}** with **{df.shape[0]:,} rows** × **{df.shape[1]} columns**. 
 
 💡 **Try:** "what is this about? ", "show columns", "average {df.columns[0] if len(df.columns) > 0 else 'price'}"
 """, None
@@ -1296,9 +1296,9 @@ def parse_datagpt_query(query, df, filename=""):
 - Memory: {df.memory_usage(deep=True).sum()/1024**2:.2f} MB
 
 **Data Quality:**
-- Complete Rows: {df.dropna().shape[0]:,} ({df.dropna().shape[0]/df.shape[0]*100:. 1f}%)
+- Complete Rows: {df.dropna().shape[0]:,} ({df.dropna().shape[0]/df.shape[0]*100:.1f}%)
 - Missing Values: {df.isnull().sum().sum():,}
-- Duplicates: {df. duplicated().sum():,}
+- Duplicates: {df.duplicated().sum():,}
 
 **Column Types:**
 - Numerical: {len(num_cols)}
@@ -1314,13 +1314,13 @@ def parse_datagpt_query(query, df, filename=""):
     
     # ========== ROW/COLUMN COUNTS ==========
     if any(phrase in q for phrase in ['how many rows', 'number of rows', 'row count', 'total rows', 'rows in']):
-        return f"📊 Dataset has **{df.shape[0]: ,} rows** (records).", None
+        return f"📊 Dataset has **{df.shape[0]:,} rows** (records).", None
     
     if any(phrase in q for phrase in ['how many columns', 'number of columns', 'column count', 'total columns']):
         return f"📋 Dataset has **{df.shape[1]} columns** (features).", None
     
     if any(w in q for w in ['size', 'how big', 'dimensions', 'shape']):
-        return f"📐 **{df.shape[0]: ,} rows** × **{df.shape[1]} columns** = **{df.shape[0]*df.shape[1]: ,} cells**", None
+        return f"📐 **{df.shape[0]:,} rows** × **{df.shape[1]} columns** = **{df.shape[0]*df.shape[1]:,} cells**", None
     
     # ========== MISSING DATA ==========
     if any(w in q for w in ['missing', 'null', 'nan', 'empty']):
@@ -1494,7 +1494,7 @@ def parse_datagpt_query(query, df, filename=""):
 **Top 10 Values:**
 """
                 for val, count in vc.head(10).items():
-                    response += f"- **{val}**: {count: ,} ({count/len(df)*100:.1f}%)\n"
+                    response += f"- **{val}**: {count:,} ({count/len(df)*100:.1f}%)\n"
                 return response, None
         
         # DEFAULT: Column found but no specific intent - provide quick summary
@@ -1741,9 +1741,9 @@ def upload_file(contents, filename, session_id):
         raise PreventUpdate
     df = parse_upload_contents(contents, filename)
     if df is None:
-        return dbc.Alert([html. Span("❌ "), "Error"], color="danger"), session_id, False
+        return dbc.Alert([html.Span("❌ "), "Error"], color="danger"), session_id, False
     SERVER_DATA_CACHE[session_id] = {'original':  df, 'cleaned': None, 'filename': filename}
-    return dbc.Alert([html. Span("✅ "), f"Uploaded:  {filename} ({df.shape[0]: ,} rows)"], color="success"), session_id, True
+    return dbc.Alert([html.Span("✅ "), f"Uploaded:  {filename} ({df.shape[0]:,} rows)"], color="success"), session_id, True
 
 @app.callback(
     Output('page-content', 'children'),
