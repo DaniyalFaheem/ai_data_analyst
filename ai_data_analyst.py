@@ -32,6 +32,19 @@ warnings.filterwarnings('ignore')
 
 SERVER_DATA_CACHE = {}
 
+def get_dataframe(session_id):
+    """
+    Safely retrieve DataFrame from cache, preferring cleaned over original.
+    Uses explicit None checks to avoid DataFrame truth value ambiguity.
+    """
+    if session_id not in SERVER_DATA_CACHE:
+        return None
+    cache = SERVER_DATA_CACHE[session_id]
+    cleaned = cache.get('cleaned')
+    if cleaned is not None:
+        return cleaned
+    return cache.get('original')
+
 CUSTOM_STYLE = """
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
     
@@ -1755,7 +1768,7 @@ def display_page(pathname, data_loaded, session_id):
 def update_dashboard(data_loaded, session_id):
     if not data_loaded or session_id not in SERVER_DATA_CACHE:
         raise PreventUpdate
-    df = SERVER_DATA_CACHE. get(session_id, {}).get('cleaned') or SERVER_DATA_CACHE.get(session_id, {}).get('original')
+    df = get_dataframe(session_id)
     stats = get_health_stats(df)
     table = dash_table.DataTable(
         data=df.head(10).to_dict('records'),
@@ -1790,7 +1803,7 @@ def clean_data(n, sid):
 )
 def update_pie_sel(p, d, sid):
     if p != '/visualization' or not d or sid not in SERVER_DATA_CACHE:  raise PreventUpdate
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     if df is None or len(df.columns) == 0:
         return [], None
     return [{'label': c, 'value': c} for c in df.columns], df.columns[0]
@@ -1802,7 +1815,7 @@ def update_pie_sel(p, d, sid):
 )
 def update_pie(c, sid):
     if not c or sid not in SERVER_DATA_CACHE: raise PreventUpdate
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     return create_smart_pie_chart(df, c)
 
 @app.callback(
@@ -1812,7 +1825,7 @@ def update_pie(c, sid):
 )
 def update_corr(p, d, sid):
     if p != '/visualization' or not d or sid not in SERVER_DATA_CACHE: raise PreventUpdate
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     return create_correlation_heatmap(df)
 
 @app.callback(
@@ -1822,7 +1835,7 @@ def update_corr(p, d, sid):
 )
 def update_dist_sel(p, d, sid):
     if p != '/visualization' or not d or sid not in SERVER_DATA_CACHE: raise PreventUpdate
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     if df is None or len(df.columns) == 0:
         return [], None
     nc = df.select_dtypes(include=[np.number]).columns.tolist()
@@ -1835,7 +1848,7 @@ def update_dist_sel(p, d, sid):
 )
 def update_dist(c, sid):
     if not c or sid not in SERVER_DATA_CACHE: raise PreventUpdate
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     return create_distribution_plot(df, c)
 
 @app.callback(
@@ -1845,7 +1858,7 @@ def update_dist(c, sid):
 )
 def update_target_sel(p, d, sid):
     if p != '/automl' or not d or sid not in SERVER_DATA_CACHE:  raise PreventUpdate
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     if df is None or len(df.columns) == 0:
         return [], None
     return [{'label': c, 'value':  c} for c in df.columns], df.columns[0]
@@ -1857,7 +1870,7 @@ def update_target_sel(p, d, sid):
 )
 def train_model_cb(n, tc, sid):
     if n is None or not tc or sid not in SERVER_DATA_CACHE: raise PreventUpdate
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     try:
         r = train_ml_model(df, tc)
         
@@ -1913,8 +1926,8 @@ def train_model_cb(n, tc, sid):
 )
 def chat(n, ui, ch, sid):
     if n is None or not ui or sid not in SERVER_DATA_CACHE: raise PreventUpdate
-    df = SERVER_DATA_CACHE. get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
-    fn = SERVER_DATA_CACHE. get(sid, {}).get('filename', '')
+    df = get_dataframe(sid)
+    fn = SERVER_DATA_CACHE.get(sid, {}).get('filename', '')
     rt, figs = parse_datagpt_query(ui, df, fn)
     if ch is None:  ch = []
     ch.append(html.Div([html.Strong("👤 You", style={'color': '#667eea', 'display': 'block', 'marginBottom': '5px'}), html.Div(ui, style={'color': 'white'})], className="chat-message-user"))
@@ -1941,7 +1954,7 @@ def export_csv(n, sid):
     if n is None or sid not in SERVER_DATA_CACHE:
         raise PreventUpdate
     
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     filename = SERVER_DATA_CACHE.get(sid, {}).get('filename', 'data.csv')
     
     # Create preview
@@ -1975,7 +1988,7 @@ def export_report(n, sid):
     if n is None or sid not in SERVER_DATA_CACHE:
         raise PreventUpdate
     
-    df = SERVER_DATA_CACHE.get(sid, {}).get('cleaned') or SERVER_DATA_CACHE.get(sid, {}).get('original')
+    df = get_dataframe(sid)
     filename = SERVER_DATA_CACHE.get(sid, {}).get('filename', 'Dataset')
     
     # Generate professional report
