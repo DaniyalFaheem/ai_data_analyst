@@ -399,6 +399,13 @@ def train_ml_model(df, target_column):
             df_model[col] = le.fit_transform(df_model[col].astype(str))
             label_encoders[col] = le
     
+    # Convert datetime columns to numeric (Unix timestamp in seconds)
+    # Use view to handle NaT values gracefully (they become NaN after conversion)
+    nanoseconds_per_second = 10**9
+    for col in df_model.columns:
+        if pd.api.types.is_datetime64_any_dtype(df_model[col]):
+            df_model[col] = df_model[col].view('int64') / nanoseconds_per_second
+    
     # Handle missing values
     df_model = df_model.fillna(df_model.median(numeric_only=True))
     for col in df_model.columns:
