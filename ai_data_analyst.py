@@ -1927,7 +1927,7 @@ def train_model_cb(n, tc, sid):
 def chat(n, ui, ch, sid):
     if n is None or not ui or sid not in SERVER_DATA_CACHE: raise PreventUpdate
     df = get_dataframe(sid)
-    fn = SERVER_DATA_CACHE. get(sid, {}).get('filename', '')
+    fn = SERVER_DATA_CACHE.get(sid, {}).get('filename', '')
     rt, figs = parse_datagpt_query(ui, df, fn)
     if ch is None:  ch = []
     ch.append(html.Div([html.Strong("👤 You", style={'color': '#667eea', 'display': 'block', 'marginBottom': '5px'}), html.Div(ui, style={'color': 'white'})], className="chat-message-user"))
