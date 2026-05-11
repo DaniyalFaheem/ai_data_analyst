@@ -15,6 +15,7 @@ import numpy as np
 import base64
 import io
 import uuid
+import logging
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingRegressor, GradientBoostingClassifier, IsolationForest
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
@@ -31,6 +32,9 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 
 SERVER_DATA_CACHE = {}
+FONT_AWESOME_CDN = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+LOGGER = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 def get_dataframe(session_id):
     """
@@ -44,6 +48,15 @@ def get_dataframe(session_id):
     if cleaned is not None:
         return cleaned
     return cache.get('original')
+
+def get_comparison_cache(session_id):
+    """Return mutable cache dictionary for comparison computations."""
+    if session_id not in SERVER_DATA_CACHE:
+        return {}
+    session_cache = SERVER_DATA_CACHE[session_id]
+    if 'comparison_cache' not in session_cache:
+        session_cache['comparison_cache'] = {}
+    return session_cache['comparison_cache']
 
 CUSTOM_STYLE = """
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -252,11 +265,56 @@ CUSTOM_STYLE = """
     #_dash-app-content > div:last-child[style*="position: fixed"] {
         display: none !important;
     }
+
+    /* ========== ENTERPRISE THEME OVERRIDES ========== */
+    :root {
+        --primary-900: #0f172a;
+        --primary-700: #1e3a8a;
+        --primary-600: #2563eb;
+        --accent-500: #0ea5e9;
+        --neutral-900: #111827;
+        --neutral-700: #334155;
+        --neutral-300: #cbd5e1;
+        --neutral-100: #f1f5f9;
+    }
+
+    body {
+        background: linear-gradient(145deg, var(--primary-900) 0%, var(--primary-700) 55%, #1d4ed8 100%);
+        color: var(--neutral-900);
+    }
+
+    .custom-nav {
+        background: linear-gradient(135deg, #0b1220 0%, #172554 100%) !important;
+    }
+
+    .kpi-card, .btn-custom, .chat-message-user {
+        background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%) !important;
+    }
+
+    .section-title,
+    .table-container h4,
+    h4, h5, h6 {
+        letter-spacing: 0.2px;
+    }
+
+    .icon-inline {
+        margin-right: 8px;
+        color: inherit;
+    }
+
+    .comparison-alert {
+        border-left: 4px solid #2563eb;
+        background: #eff6ff;
+        border-radius: 10px;
+        padding: 10px 12px;
+        color: #1e3a8a;
+        margin-bottom: 12px;
+    }
 """
 
 app = dash.Dash(
     __name__, 
-    external_stylesheets=[dbc.themes.BOOTSTRAP], 
+    external_stylesheets=[dbc.themes.BOOTSTRAP, FONT_AWESOME_CDN], 
     suppress_callback_exceptions=True, 
     title="AI Data Analyst"
 )
@@ -294,7 +352,7 @@ def parse_upload_contents(contents, filename):
             return pd.read_csv(io. StringIO(decoded.decode('utf-8')))
         return None
     except Exception as e: 
-        print(f"Error:  {e}")
+        LOGGER.exception("Failed to parse uploaded file: %s", e)
         return None
 
 def auto_clean_data(df):
@@ -323,6 +381,97 @@ def get_health_stats(df):
     missing = int(df.isnull().sum().sum())
     duplicates = int(df.duplicated().sum())
     return {'missing':  missing, 'duplicates': duplicates, 'total_cells':  total_cells}
+
+def create_icon(name, class_name="icon-inline"):
+    """Return a Font Awesome icon element."""
+    return html.I(className=f"fa-solid fa-{name} {class_name}", **{"aria-hidden": "true"})
+
+def create_comparison_analysis(df, selected_columns, mode):
+    """Create comparison figure, summary rows, and anomaly notes for selected columns."""
+    cols = [col for col in selected_columns if col in df.columns]
+    if len(cols) < 2:
+        return go.Figure(), [], "Select at least two columns for comparison."
+
+    numeric_cols = [col for col in cols if pd.api.types.is_numeric_dtype(df[col])]
+    summary_rows = []
+    anomalies = []
+
+    for col in cols:
+        series = df[col]
+        missing_pct = (series.isnull().sum() / len(series) * 100) if len(series) else 0
+        unique_ratio = (series.nunique(dropna=True) / len(series) * 100) if len(series) else 0
+        indicator = "Stable"
+        if missing_pct >= 25:
+            indicator = "High Missing"
+            anomalies.append(f"{col}: high missing values ({missing_pct:.1f}%).")
+        elif unique_ratio <= 1 and len(series) > 0:
+            indicator = "Low Variability"
+            anomalies.append(f"{col}: very low variability.")
+
+        row = {
+            'Column': col,
+            'Type': str(series.dtype),
+            'Missing %': f"{missing_pct:.1f}",
+            'Unique %': f"{unique_ratio:.1f}",
+            'Indicator': indicator
+        }
+        if pd.api.types.is_numeric_dtype(series):
+            row.update({
+                'Mean': f"{series.mean():.3f}" if series.notna().any() else "N/A",
+                'Median': f"{series.median():.3f}" if series.notna().any() else "N/A",
+                'Std Dev': f"{series.std():.3f}" if series.notna().any() else "N/A"
+            })
+        else:
+            row.update({'Mean': "N/A", 'Median': "N/A", 'Std Dev': "N/A"})
+        summary_rows.append(row)
+
+    if mode == 'distribution':
+        if len(numeric_cols) < 2:
+            fig = go.Figure()
+            fig.add_annotation(text="Distribution mode requires at least two numeric columns.", showarrow=False)
+            fig.update_layout(template='plotly_white')
+            return fig, summary_rows, "Distribution comparison requires at least two numeric columns."
+        fig = make_subplots(rows=1, cols=2, subplot_titles=("Histogram Comparison", "Box Plot Comparison"))
+        for col in numeric_cols:
+            fig.add_trace(go.Histogram(x=df[col], name=col, opacity=0.65), row=1, col=1)
+            fig.add_trace(go.Box(y=df[col], name=col, boxmean=True), row=1, col=2)
+        fig.update_layout(barmode='overlay', template='plotly_white', height=520, title="Distribution Comparison")
+    elif mode == 'statistics':
+        stats_df = pd.DataFrame([
+            {'Column': col, 'Mean': df[col].mean(), 'Median': df[col].median(), 'Std Dev': df[col].std()}
+            for col in numeric_cols
+        ]).fillna(0)
+        if stats_df.empty:
+            fig = go.Figure()
+            fig.add_annotation(text="Statistics mode requires numeric columns.", showarrow=False)
+            fig.update_layout(template='plotly_white')
+            return fig, summary_rows, "Statistics comparison requires numeric columns."
+        fig = go.Figure()
+        for metric in ['Mean', 'Median', 'Std Dev']:
+            fig.add_trace(go.Bar(x=stats_df['Column'], y=stats_df[metric], name=metric))
+        fig.update_layout(barmode='group', template='plotly_white', height=480, title="Statistical Metrics Comparison")
+    elif mode == 'correlation':
+        if len(numeric_cols) < 2:
+            fig = go.Figure()
+            fig.add_annotation(text="Correlation mode requires at least two numeric columns.", showarrow=False)
+            fig.update_layout(template='plotly_white')
+            return fig, summary_rows, "Correlation comparison requires at least two numeric columns."
+        corr = df[numeric_cols].corr()
+        fig = go.Figure(data=go.Heatmap(z=corr.values, x=corr.columns, y=corr.columns, colorscale='RdBu', zmid=0, text=corr.values, texttemplate='%{text:.2f}'))
+        fig.update_layout(template='plotly_white', height=520, title="Correlation Comparison")
+    else:
+        quality_df = pd.DataFrame({
+            'Column': cols,
+            'Missing %': [(df[col].isnull().sum() / len(df) * 100) if len(df) else 0 for col in cols],
+            'Completeness %': [((1 - df[col].isnull().sum() / len(df)) * 100) if len(df) else 0 for col in cols]
+        })
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=quality_df['Column'], y=quality_df['Missing %'], name='Missing %'))
+        fig.add_trace(go.Bar(x=quality_df['Column'], y=quality_df['Completeness %'], name='Completeness %'))
+        fig.update_layout(barmode='group', template='plotly_white', height=480, title="Data Quality Comparison")
+
+    note = "No major anomalies detected in selected columns." if not anomalies else " | ".join(anomalies[:3])
+    return fig, summary_rows, note
 
 def create_smart_pie_chart(df, column):
     try:
@@ -682,6 +831,7 @@ def generate_professional_report(df, filename="Dataset"):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Data Analysis Report - {filename}</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link rel="stylesheet" href="{FONT_AWESOME_CDN}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         * {{
@@ -980,7 +1130,7 @@ def generate_professional_report(df, filename="Dataset"):
     <div class="container">
         <!-- Header -->
         <div class="header">
-            <div class="header-icon">📊</div>
+            <div class="header-icon"><i class="fa-solid fa-chart-column"></i></div>
             <h1>Professional Data Analysis Report</h1>
             <p class="subtitle">Comprehensive Analysis of <strong>{filename}</strong></p>
             <p class="date">Generated on {report_date}</p>
@@ -989,32 +1139,32 @@ def generate_professional_report(df, filename="Dataset"):
         <!-- Executive Summary KPIs -->
         <div class="kpi-grid">
             <div class="kpi-card">
-                <div class="kpi-icon">📊</div>
+                <div class="kpi-icon"><i class="fa-solid fa-table"></i></div>
                 <div class="kpi-value">{total_rows:,}</div>
                 <div class="kpi-label">Total Records</div>
             </div>
             <div class="kpi-card info">
-                <div class="kpi-icon">📋</div>
+                <div class="kpi-icon"><i class="fa-solid fa-table-columns"></i></div>
                 <div class="kpi-value">{total_cols}</div>
                 <div class="kpi-label">Data Features</div>
             </div>
             <div class="kpi-card success">
-                <div class="kpi-icon">✅</div>
+                <div class="kpi-icon"><i class="fa-solid fa-circle-check"></i></div>
                 <div class="kpi-value">{completeness:.1f}%</div>
                 <div class="kpi-label">Data Completeness</div>
             </div>
             <div class="kpi-card warning">
-                <div class="kpi-icon">⚠️</div>
+                <div class="kpi-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
                 <div class="kpi-value">{missing_values:,}</div>
                 <div class="kpi-label">Missing Values</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-icon">🔄</div>
+                <div class="kpi-icon"><i class="fa-solid fa-copy"></i></div>
                 <div class="kpi-value">{duplicates:,}</div>
                 <div class="kpi-label">Duplicate Rows</div>
             </div>
             <div class="kpi-card info">
-                <div class="kpi-icon">💾</div>
+                <div class="kpi-icon"><i class="fa-solid fa-memory"></i></div>
                 <div class="kpi-value">{memory_usage:.2f} MB</div>
                 <div class="kpi-label">Memory Usage</div>
             </div>
@@ -1022,7 +1172,7 @@ def generate_professional_report(df, filename="Dataset"):
         
         <!-- Data Quality Section -->
         <div class="section">
-            <h2 class="section-title"><span>🎯</span> Data Quality Score</h2>
+            <h2 class="section-title"><span><i class="fa-solid fa-bullseye"></i></span> Data Quality Score</h2>
             <div class="quality-meter">
                 <div class="quality-fill" style="width: {completeness}%;"></div>
             </div>
@@ -1052,7 +1202,7 @@ def generate_professional_report(df, filename="Dataset"):
         
         <!-- Visualizations Section -->
         <div class="section">
-            <h2 class="section-title"><span>📈</span> Data Visualizations</h2>
+            <h2 class="section-title"><span><i class="fa-solid fa-chart-line"></i></span> Data Visualizations</h2>
             <div class="charts-grid">
                 {charts_html}
             </div>
@@ -1060,7 +1210,7 @@ def generate_professional_report(df, filename="Dataset"):
         
         <!-- Column Details Section -->
         <div class="section">
-            <h2 class="section-title"><span>📋</span> Column Analysis</h2>
+            <h2 class="section-title"><span><i class="fa-solid fa-list-check"></i></span> Column Analysis</h2>
             <table>
                 <thead>
                     <tr>
@@ -1079,7 +1229,7 @@ def generate_professional_report(df, filename="Dataset"):
         
         <!-- Footer -->
         <div class="footer">
-            <p>🤖 Generated by <strong>AI Data Analyst</strong> | Professional Data Analysis Platform</p>
+            <p>Generated by <strong>AI Data Analyst</strong> | Professional Data Analysis Platform</p>
             <p style="margin-top: 5px; font-size: 0.8rem;">© {datetime.now().year} All Rights Reserved</p>
         </div>
     </div>
@@ -1212,18 +1362,18 @@ def parse_datagpt_query(query, df, filename=""):
     
     # ========== GREETINGS ==========
     if any(w in q for w in ['hello', 'hi', 'hey', 'good morning', 'good afternoon']):
-        return f"""👋 **Hello!  I'm DataGPT! ** Analyzing **{filename or 'your dataset'}** with **{df.shape[0]:,} rows** × **{df.shape[1]} columns**. 
+        return f""" **Hello!  I'm DataGPT! ** Analyzing **{filename or 'your dataset'}** with **{df.shape[0]:,} rows** × **{df.shape[1]} columns**. 
 
-💡 **Try:** "what is this about? ", "show columns", "average {df.columns[0] if len(df.columns) > 0 else 'price'}"
+ **Try:** "what is this about? ", "show columns", "average {df.columns[0] if len(df.columns) > 0 else 'price'}"
 """, None
     
     if any(w in q for w in ['thank', 'thanks']):
-        return "😊 **You're welcome!** Happy to help!", None
+        return " **You're welcome!** Happy to help!", None
     
     # ========== HELP ==========
     if any(w in q for w in ['help', 'what can you do', 'commands', 'capabilities']):
         sample_cols = list(df.columns[: 3])
-        return f"""🤖 **DataGPT - I can answer 1000+ questions!**
+        return f""" **DataGPT - I can answer 1000+ questions!**
 
 **Dataset Info:**
 - "What is this dataset about?"
@@ -1244,7 +1394,7 @@ def parse_datagpt_query(query, df, filename=""):
 
 **Available columns:** {', '.join(df.columns[: 5])}{"..." if len(df.columns) > 5 else ""}
 
-**Just ask naturally! ** 🚀
+**Just ask naturally! ** 
 """, None
     
     # ========== DATASET OVERVIEW ==========
@@ -1255,7 +1405,7 @@ def parse_datagpt_query(query, df, filename=""):
         complete = total_cells - df.isnull().sum().sum()
         quality = (complete / total_cells * 100) if total_cells > 0 else 0
         
-        return f"""📁 **Dataset:  {filename or 'Your Data'}**
+        return f""" **Dataset:  {filename or 'Your Data'}**
 
 **Size:** {df.shape[0]:,} rows × {df.shape[1]} columns ({total_cells:,} cells)
 **Memory:** {df.memory_usage(deep=True).sum()/1024**2:.2f} MB
@@ -1272,7 +1422,7 @@ def parse_datagpt_query(query, df, filename=""):
 
 **Columns:** {', '.join(df.columns[:5])}{"..." if len(df.columns) > 5 else ""}
 
-💡 **Try:** "show columns", "summary", "average {df.columns[0]}"
+ **Try:** "show columns", "summary", "average {df.columns[0]}"
 """, None
     
     # ========== COLUMNS LISTING ==========
@@ -1283,24 +1433,24 @@ def parse_datagpt_query(query, df, filename=""):
             missing = df[col].isnull().sum()
             insight = ""
             if missing > len(df) * 0.5:
-                insight = " ⚠️ High missing"
+                insight = " ️ High missing"
             elif unique == 1:
-                insight = " ⚠️ Constant"
+                insight = " ️ Constant"
             elif unique == len(df):
-                insight = " 🔑 ID?"
+                insight = "  ID?"
             cols_info.append(f"{i}. **{col}** ({df[col].dtype}) - {unique:,} unique, {missing:,} missing{insight}")
         
-        return f"""📋 **All {len(df. columns)} Columns:**
+        return f""" **All {len(df. columns)} Columns:**
 
 {chr(10).join(cols_info)}
 
-💡 **Try:** "average {df.columns[0]}", "analyze {df.columns[1] if len(df.columns) > 1 else df.columns[0]}"
+ **Try:** "average {df.columns[0]}", "analyze {df.columns[1] if len(df.columns) > 1 else df.columns[0]}"
 """, None
     
     # ========== SUMMARY ==========
     if any(w in q for w in ['summary', 'summarize', 'overview', 'describe data', 'statistics', 'stats']):
         num_cols = df.select_dtypes(include=[np.number]).columns
-        summary = f"""📊 **Dataset Summary**
+        summary = f""" **Dataset Summary**
 
 **Basic Info:**
 - Rows: {df.shape[0]:,}
@@ -1326,13 +1476,13 @@ def parse_datagpt_query(query, df, filename=""):
     
     # ========== ROW/COLUMN COUNTS ==========
     if any(phrase in q for phrase in ['how many rows', 'number of rows', 'row count', 'total rows', 'rows in']):
-        return f"📊 Dataset has **{df.shape[0]:,} rows** (records).", None
+        return f" Dataset has **{df.shape[0]:,} rows** (records).", None
     
     if any(phrase in q for phrase in ['how many columns', 'number of columns', 'column count', 'total columns']):
-        return f"📋 Dataset has **{df.shape[1]} columns** (features).", None
+        return f" Dataset has **{df.shape[1]} columns** (features).", None
     
     if any(w in q for w in ['size', 'how big', 'dimensions', 'shape']):
-        return f"📐 **{df.shape[0]:,} rows** × **{df.shape[1]} columns** = **{df.shape[0]*df.shape[1]:,} cells**", None
+        return f" **{df.shape[0]:,} rows** × **{df.shape[1]} columns** = **{df.shape[0]*df.shape[1]:,} cells**", None
     
     # ========== MISSING DATA ==========
     if any(w in q for w in ['missing', 'null', 'nan', 'empty']):
@@ -1340,7 +1490,7 @@ def parse_datagpt_query(query, df, filename=""):
         missing_by_col = df.isnull().sum()
         missing_cols = missing_by_col[missing_by_col > 0]. sort_values(ascending=False)
         
-        response = f"""⚠️ **Missing Data Analysis**
+        response = f"""️ **Missing Data Analysis**
 
 **Total:** {total_missing:,} missing ({total_missing/(df.shape[0]*df. shape[1])*100:.2f}%)
 **Columns Affected:** {len(missing_cols)} of {df.shape[1]}
@@ -1348,20 +1498,20 @@ def parse_datagpt_query(query, df, filename=""):
 """
         if len(missing_cols) > 0:
             for col, count in missing_cols.head(10).items():
-                severity = "🔴" if count/len(df) > 0.5 else "🟡" if count/len(df) > 0.2 else "🟢"
+                severity = "" if count/len(df) > 0.5 else "" if count/len(df) > 0.2 else ""
                 response += f"{severity} **{col}**:  {count:,} ({count/len(df)*100:.1f}%)\n"
         else:
-            response += "✅ **No missing data! **"
+            response += " **No missing data! **"
         
         return response, None
     
     # ========== DUPLICATES ==========
     if any(w in q for w in ['duplicate', 'duplicates', 'repeated']):
         dup = df.duplicated().sum()
-        return f"""🔄 **Duplicates:** {dup:,} rows ({dup/df.shape[0]*100:.2f}%)
+        return f""" **Duplicates:** {dup:,} rows ({dup/df.shape[0]*100:.2f}%)
 **Unique Rows:** {df.drop_duplicates().shape[0]:,}
 
-{"✅ No duplicates!" if dup == 0 else "💡 Consider removing duplicates"}
+{" No duplicates!" if dup == 0 else " Consider removing duplicates"}
 """, None
     
     # ========== CORRELATIONS ==========
@@ -1375,12 +1525,12 @@ def parse_datagpt_query(query, df, filename=""):
                     top_corr.append((corr.columns[i], corr.columns[j], corr.iloc[i,j]))
             top_corr = sorted(top_corr, key=lambda x: abs(x[2]), reverse=True)[:10]
             
-            response = "🔗 **Top 10 Correlations:**\n\n"
+            response = " **Top 10 Correlations:**\n\n"
             for c1, c2, val in top_corr:
-                strength = "💪 Strong" if abs(val) > 0.7 else "👌 Moderate" if abs(val) > 0.4 else "🤏 Weak"
+                strength = " Strong" if abs(val) > 0.7 else " Moderate" if abs(val) > 0.4 else " Weak"
                 response += f"{strength}:  **{c1}** ↔️ **{c2}**:  {val:.3f}\n"
             return response, None
-        return "⚠️ Need 2+ numerical columns", None
+        return "️ Need 2+ numerical columns", None
     
     # ========== SMART COLUMN-SPECIFIC QUERIES ==========
     intent, column = detect_intent_and_column(q, df.columns)
@@ -1391,47 +1541,47 @@ def parse_datagpt_query(query, df, filename=""):
         # MEAN/AVERAGE
         if intent == 'mean' or any(w in q for w in ['mean', 'average', 'avg']):
             if df[col].dtype in ['float64', 'int64']: 
-                return f"📊 **{col}** average: **{df[col].mean():.2f}** (median: {df[col].median():.2f}, min: {df[col].min():.2f}, max: {df[col].max():.2f})", None
-            return f"⚠️ **{col}** is not numerical ({df[col].dtype}). Try 'show unique {col}'", None
+                return f" **{col}** average: **{df[col].mean():.2f}** (median: {df[col].median():.2f}, min: {df[col].min():.2f}, max: {df[col].max():.2f})", None
+            return f"️ **{col}** is not numerical ({df[col].dtype}). Try 'show unique {col}'", None
         
         # MAX
         if intent == 'max' or any(w in q for w in ['max', 'maximum', 'highest', 'largest', 'biggest']):
             if df[col]. dtype in ['float64', 'int64']:
                 max_val = df[col].max()
                 min_val = df[col].min()
-                return f"📈 **{col}** maximum: **{max_val:.2f}** (minimum: {min_val:.2f}, range: {max_val-min_val:.2f})", None
-            return f"📈 **{col}** maximum: **{df[col].max()}**", None
+                return f" **{col}** maximum: **{max_val:.2f}** (minimum: {min_val:.2f}, range: {max_val-min_val:.2f})", None
+            return f" **{col}** maximum: **{df[col].max()}**", None
         
         # MIN
         if intent == 'min' or any(w in q for w in ['min', 'minimum', 'lowest', 'smallest']):
             if df[col].dtype in ['float64', 'int64']:
                 min_val = df[col].min()
                 max_val = df[col].max()
-                return f"📉 **{col}** minimum: **{min_val:.2f}** (maximum: {max_val:.2f}, range: {max_val-min_val:.2f})", None
-            return f"📉 **{col}** minimum: **{df[col].min()}**", None
+                return f" **{col}** minimum: **{min_val:.2f}** (maximum: {max_val:.2f}, range: {max_val-min_val:.2f})", None
+            return f" **{col}** minimum: **{df[col].min()}**", None
         
         # MEDIAN
         if intent == 'median' or 'median' in q: 
             if df[col].dtype in ['float64', 'int64']:
-                return f"📊 **{col}** median: **{df[col].median():.2f}** (mean: {df[col].mean():.2f})", None
-            return f"⚠️ Median only for numerical data", None
+                return f" **{col}** median: **{df[col].median():.2f}** (mean: {df[col].mean():.2f})", None
+            return f"️ Median only for numerical data", None
         
         # SUM/TOTAL
         if intent == 'sum' or any(w in q for w in ['sum', 'total']):
             if df[col]. dtype in ['float64', 'int64']:
-                return f"➕ **{col}** total: **{df[col].sum():,.2f}** (average: {df[col].mean():.2f})", None
-            return f"⚠️ Sum only for numerical data", None
+                return f" **{col}** total: **{df[col].sum():,.2f}** (average: {df[col].mean():.2f})", None
+            return f"️ Sum only for numerical data", None
         
         # COUNT
         if intent == 'count' or any(phrase in q for phrase in ['how many', 'count', 'number of']):
             count = len(df[col]. dropna())
-            return f"🔢 **{col}** has **{count:,} values** ({df[col].nunique():,} unique)", None
+            return f" **{col}** has **{count:,} values** ({df[col].nunique():,} unique)", None
         
         # UNIQUE/DISTINCT
         if intent == 'unique' or intent == 'show' or any(w in q for w in ['unique', 'distinct', 'different', 'show', 'list']):
             unique = df[col].nunique()
             top_5 = df[col].value_counts().head(10)
-            response = f"🔢 **{col}** has **{unique:,} unique values**\n\n**Top 10:**\n"
+            response = f" **{col}** has **{unique:,} unique values**\n\n**Top 10:**\n"
             for val, count in top_5.items():
                 response += f"- **{val}**:  {count:,} ({count/len(df)*100:.1f}%)\n"
             return response, None
@@ -1439,19 +1589,19 @@ def parse_datagpt_query(query, df, filename=""):
         # STD/VARIANCE
         if intent == 'std' or any(w in q for w in ['std', 'standard deviation', 'variance']):
             if df[col]. dtype in ['float64', 'int64']:
-                return f"📊 **{col}** std dev: **{df[col].std():.2f}** (variance: {df[col].var():.2f})", None
-            return f"⚠️ Standard deviation only for numerical data", None
+                return f" **{col}** std dev: **{df[col].std():.2f}** (variance: {df[col].var():.2f})", None
+            return f"️ Standard deviation only for numerical data", None
         
         # MODE
         if intent == 'mode' or any(phrase in q for phrase in ['mode', 'most common', 'most frequent']):
             mode_val = df[col].mode()[0] if not df[col].mode().empty else 'N/A'
             mode_count = (df[col] == mode_val).sum() if mode_val != 'N/A' else 0
-            return f"📊 **{col}** most common: **{mode_val}** (appears {mode_count:,} times, {mode_count/len(df)*100:.1f}%)", None
+            return f" **{col}** most common: **{mode_val}** (appears {mode_count:,} times, {mode_count/len(df)*100:.1f}%)", None
         
         # ANALYZE - Full analysis
         if intent == 'analyze' or any(w in q for w in ['analyze', 'analysis', 'detailed', 'full', 'tell me about', 'describe', 'info']):
             if df[col].dtype in ['float64', 'int64']:
-                stats = f"""🔍 **Complete Analysis:  {col}**
+                stats = f""" **Complete Analysis:  {col}**
 
 **Statistics:**
 - Mean: {df[col].mean():.2f}
@@ -1472,20 +1622,20 @@ def parse_datagpt_query(query, df, filename=""):
                 if len(df) > 1:
                     corr = df[col].corr(pd.Series(range(len(df))))
                     if corr > 0.3:
-                        stats += "- 📈 Upward trend\n"
+                        stats += "-  Upward trend\n"
                     elif corr < -0.3:
-                        stats += "- 📉 Downward trend\n"
+                        stats += "-  Downward trend\n"
                     else: 
-                        stats += "- ➡️ No clear trend\n"
+                        stats += "- ️ No clear trend\n"
                 
                 # Variability
                 cv = (df[col]. std() / df[col].mean() * 100) if df[col].mean() != 0 else 0
                 if cv < 15:
-                    stats += "- 🟢 Low variability\n"
+                    stats += "-  Low variability\n"
                 elif cv < 30:
-                    stats += "- 🟡 Moderate variability\n"
+                    stats += "-  Moderate variability\n"
                 else:
-                    stats += "- 🔴 High variability\n"
+                    stats += "-  High variability\n"
                 
                 anom_fig, _ = perform_anomaly_detection(df, col)
                 fore_fig, _ = perform_forecasting(df, col)
@@ -1496,7 +1646,7 @@ def parse_datagpt_query(query, df, filename=""):
                 return stats, figs if figs else None
             else:
                 vc = df[col].value_counts()
-                response = f"""🔍 **Analysis:  {col}**
+                response = f""" **Analysis:  {col}**
 
 **Type:** {df[col].dtype}
 **Unique:** {df[col].nunique():,}
@@ -1513,20 +1663,20 @@ def parse_datagpt_query(query, df, filename=""):
         if df[col].dtype in ['float64', 'int64']:
             col_data = df[col].dropna()
             if len(col_data) == 0:
-                return f"""📊 **{col}** Quick Summary:
+                return f""" **{col}** Quick Summary:
 - Type: Numerical
 - All values are missing (NaN)
 
-💡 Try: "show missing data" for more details!
+ Try: "show missing data" for more details!
 """, None
-            return f"""📊 **{col}** Quick Summary:
+            return f""" **{col}** Quick Summary:
 - Mean: **{col_data.mean():.2f}**
 - Median: {col_data.median():.2f}
 - Min: {col_data.min():.2f}
 - Max: {col_data.max():.2f}
 - Unique values: {col_data.nunique():,}
 
-💡 Try: "average {col}", "analyze {col}", "show unique {col}" for more details!
+ Try: "average {col}", "analyze {col}", "show unique {col}" for more details!
 """, None
         else:
             top_3 = df[col].value_counts().head(3)
@@ -1534,12 +1684,12 @@ def parse_datagpt_query(query, df, filename=""):
                 top_vals = "No values available"
             else:
                 top_vals = ', '.join([f"**{v}** ({c:,})" for v, c in top_3.items()])
-            return f"""📊 **{col}** Quick Summary:
+            return f""" **{col}** Quick Summary:
 - Type: {df[col].dtype}
 - Unique values: **{df[col].nunique():,}**
 - Top values: {top_vals}
 
-💡 Try: "analyze {col}", "show unique {col}" for more details!
+ Try: "analyze {col}", "show unique {col}" for more details!
 """, None
     
     # ========== FALLBACK WITH SMART SUGGESTIONS ==========
@@ -1553,18 +1703,18 @@ def parse_datagpt_query(query, df, filename=""):
     
     if potential_columns:
         suggestions = ', '.join([f'"{col}"' for col in potential_columns[: 3]])
-        return f"""💡 **I found these related columns:** {suggestions}
+        return f""" **I found these related columns:** {suggestions}
 
 **Try asking:**
 - "What's the average {potential_columns[0]}?"
 - "Show unique {potential_columns[0]}"
 - "Analyze {potential_columns[0]}"
 
-**Or type "help" to see all I can do!** 🤔
+**Or type "help" to see all I can do!** 
 """, None
     
     # Final fallback
-    return f"""💡 **I can help! **
+    return f""" **I can help! **
 
 **Available columns:** {', '.join(df. columns[:5])}{"..." if len(df.columns) > 5 else ""}
 
@@ -1574,7 +1724,7 @@ def parse_datagpt_query(query, df, filename=""):
 - "Average {df.columns[0]}"
 - "Analyze {df.columns[0]}"
 
-Type **"help"** for all capabilities!  🤔
+Type **"help"** for all capabilities!  
 """, None
 
 # =============================================================================
@@ -1584,14 +1734,14 @@ Type **"help"** for all capabilities!  🤔
 def create_navbar():
     return dbc.Navbar(
         dbc.Container([
-            dbc.Row([dbc.Col([html.Div([html.Div("🤖", style={'fontSize': '1.8rem', 'marginRight': '10px'}), html.Span("AI Data Analyst", className="brand-logo")], style={'display': 'flex', 'alignItems': 'center'})], width="auto")], align="center", className="g-0 w-100"),
+            dbc.Row([dbc.Col([html.Div([create_icon("chart-line"), html.Span("AI Data Analyst", className="brand-logo")], style={'display': 'flex', 'alignItems': 'center'})], width="auto")], align="center", className="g-0 w-100"),
             dbc.Row([dbc.Col([dbc.Nav([
-                dbc.NavItem(dbc.NavLink([html.Span("🏠 "), "Dashboard"], href="/", className="nav-link")),
-                dbc.NavItem(dbc.NavLink([html.Span("🧹 "), "Cleaning"], href="/cleaning", className="nav-link")),
-                dbc.NavItem(dbc.NavLink([html.Span("📊 "), "Visualization"], href="/visualization", className="nav-link")),
-                dbc.NavItem(dbc.NavLink([html.Span("🧠 "), "AutoML"], href="/automl", className="nav-link")),
-                dbc.NavItem(dbc.NavLink([html.Span("💬 "), "DataGPT"], href="/datagpt", className="nav-link")),
-                dbc.NavItem(dbc.NavLink([html.Span("📥 "), "Export"], href="/export", className="nav-link")),
+                dbc.NavItem(dbc.NavLink([create_icon("house"), "Dashboard"], href="/", className="nav-link")),
+                dbc.NavItem(dbc.NavLink([create_icon("broom"), "Cleaning"], href="/cleaning", className="nav-link")),
+                dbc.NavItem(dbc.NavLink([create_icon("chart-pie"), "Visualization"], href="/visualization", className="nav-link")),
+                dbc.NavItem(dbc.NavLink([create_icon("brain"), "AutoML"], href="/automl", className="nav-link")),
+                dbc.NavItem(dbc.NavLink([create_icon("comments"), "DataGPT"], href="/datagpt", className="nav-link")),
+                dbc.NavItem(dbc.NavLink([create_icon("download"), "Export"], href="/export", className="nav-link")),
             ], navbar=True, className="ms-auto")])], className="g-0 w-100 justify-content-end"),
         ], fluid=True),
         className="custom-nav",
@@ -1603,11 +1753,10 @@ def create_upload_section():
         dcc.Upload(
             id='upload-data',
             children=html.Div([
-                html.Div("☁️", style={'fontSize': '7rem', 'marginBottom': '20px', 'filter': 'drop-shadow(0 0 20px rgba(255,255,255,0.6))'}),
-                html.Div("⬆️", style={'fontSize': '4rem', 'marginTop': '-60px', 'marginBottom': '30px'}),
+                html.Div(create_icon("cloud-arrow-up", class_name=""), style={'fontSize': '6rem', 'marginBottom': '20px', 'filter': 'drop-shadow(0 0 20px rgba(255,255,255,0.6))', 'color': '#ffffff'}),
                 html.H4("Upload Your Dataset", style={'color': '#ffffff', 'marginBottom': '15px', 'fontWeight': '700', 'fontSize': '1.8rem'}),
                 html.P(["Drag and drop your CSV file here or ", html. Span("click to browse", style={'color': '#ffd93d', 'fontWeight': '700', 'cursor': 'pointer', 'textDecoration': 'underline'})], style={'color': '#ffffff', 'fontSize': '1.1rem', 'marginBottom': '15px'}),
-                html.Small("📄 Supported format: CSV", style={'color': 'rgba(255, 255, 255, 0.9)', 'fontSize': '0.95rem'})
+                html.Small([create_icon("file-csv"), "Supported format: CSV"], style={'color': 'rgba(255, 255, 255, 0.9)', 'fontSize': '0.95rem'})
             ], className="upload-zone"),
             multiple=False
         ),
@@ -1616,23 +1765,23 @@ def create_upload_section():
 
 def create_dashboard_layout():
     return html.Div([
-        html.H2("📊 Dashboard Overview", className="section-title mb-4"),
+        html.H2([create_icon("chart-simple"), "Dashboard Overview"], className="section-title mb-4"),
         dbc.Row([
-            dbc.Col([html.Div([html.Div("📊", className="kpi-icon"), html.Div(id="kpi-rows", className="kpi-value"), html.Div("Total Rows", className="kpi-label")], className="kpi-card")], md=3, className="mb-4"),
-            dbc.Col([html. Div([html.Div("📋", className="kpi-icon"), html.Div(id="kpi-features", className="kpi-value"), html.Div("Features", className="kpi-label")], className="kpi-card")], md=3, className="mb-4"),
-            dbc.Col([html.Div([html.Div("⚠️", className="kpi-icon"), html.Div(id="kpi-missing", className="kpi-value"), html.Div("Missing Values", className="kpi-label")], className="kpi-card")], md=3, className="mb-4"),
-            dbc.Col([html.Div([html.Div("🔄", className="kpi-icon"), html.Div(id="kpi-duplicates", className="kpi-value"), html.Div("Duplicates", className="kpi-label")], className="kpi-card")], md=3, className="mb-4"),
+            dbc.Col([html.Div([create_icon("table", class_name="kpi-icon"), html.Div(id="kpi-rows", className="kpi-value"), html.Div("Total Rows", className="kpi-label")], className="kpi-card")], md=3, className="mb-4"),
+            dbc.Col([html. Div([create_icon("table-columns", class_name="kpi-icon"), html.Div(id="kpi-features", className="kpi-value"), html.Div("Features", className="kpi-label")], className="kpi-card")], md=3, className="mb-4"),
+            dbc.Col([html.Div([create_icon("triangle-exclamation", class_name="kpi-icon"), html.Div(id="kpi-missing", className="kpi-value"), html.Div("Missing Values", className="kpi-label")], className="kpi-card")], md=3, className="mb-4"),
+            dbc.Col([html.Div([create_icon("copy", class_name="kpi-icon"), html.Div(id="kpi-duplicates", className="kpi-value"), html.Div("Duplicates", className="kpi-label")], className="kpi-card")], md=3, className="mb-4"),
         ]),
-        html.Div([html.H4("📄 Data Preview", style={'color': '#2c3e50', 'marginBottom': '20px'}), html.Div(id="data-preview", className="table-container")], className="glass-card p-4")
+        html.Div([html.H4([create_icon("file-lines"), "Data Preview"], style={'color': '#2c3e50', 'marginBottom': '20px'}), html.Div(id="data-preview", className="table-container")], className="glass-card p-4")
     ])
 
 def create_cleaning_layout():
     return html.Div([
-        html.H2("🧹 Data Cleaning", className="section-title mb-4"),
+        html.H2([create_icon("broom"), "Data Cleaning"], className="section-title mb-4"),
         dbc.Row([dbc.Col([html.Div([
-            html.H4("🧹 Auto-Clean Pipeline", style={'color': '#2c3e50'}),
+            html.H4([create_icon("wand-magic-sparkles"), "Auto-Clean Pipeline"], style={'color': '#2c3e50'}),
             html.P("Automatically remove duplicates, handle missing values", style={'color': '#666', 'marginBottom': '25px'}),
-            dbc.Button([html.Span("✨ "), "Clean Data Now"], id="btn-clean", size="lg", className="btn-custom w-100"),
+            dbc.Button([create_icon("filter-circle-xmark"), "Clean Data Now"], id="btn-clean", size="lg", className="btn-custom w-100"),
             html.Div(id="cleaning-status", className="mt-4")
         ], className="glass-card p-4 mb-4")])]),
         dbc.Row([
@@ -1643,20 +1792,40 @@ def create_cleaning_layout():
 
 def create_visualization_layout():
     return html.Div([
-        html.H2("📊 Data Visualization", className="section-title mb-4"),
-        dbc.Row([dbc.Col([html.Div([html.H5("📊 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="pie-column-selector", className="mb-3", searchable=False, clearable=False, placeholder="Select a column..."), dcc.Graph(id="pie-chart", style={'height': '400px'})], className="glass-card p-4 mb-4")])]),
-        dbc.Row([dbc.Col([html.Div([html.H5("🔥 Correlation", style={'color': '#2c3e50'}), dcc.Graph(id="correlation-heatmap", style={'height': '500px'})], className="glass-card p-4 mb-4")])]),
-        dbc.Row([dbc.Col([html.Div([html.H5("📈 Distribution", style={'color': '#2c3e50'}), dcc.Dropdown(id="dist-column-selector", className="mb-3", searchable=False, clearable=False, placeholder="Select a column..."), dcc.Graph(id="distribution-plot", style={'height': '500px'})], className="glass-card p-4")])])
+        html.H2([create_icon("chart-pie"), "Data Visualization"], className="section-title mb-4"),
+        dbc.Row([dbc.Col([html.Div([html.H5([create_icon("chart-pie"), "Distribution"], style={'color': '#2c3e50'}), dcc.Dropdown(id="pie-column-selector", className="mb-3", searchable=False, clearable=False, placeholder="Select a column..."), dcc.Graph(id="pie-chart", style={'height': '400px'})], className="glass-card p-4 mb-4")])]),
+        dbc.Row([dbc.Col([html.Div([html.H5([create_icon("chart-line"), "Correlation"], style={'color': '#2c3e50'}), dcc.Graph(id="correlation-heatmap", style={'height': '500px'})], className="glass-card p-4 mb-4")])]),
+        dbc.Row([dbc.Col([html.Div([html.H5([create_icon("chart-column"), "Distribution"], style={'color': '#2c3e50'}), dcc.Dropdown(id="dist-column-selector", className="mb-3", searchable=False, clearable=False, placeholder="Select a column..."), dcc.Graph(id="distribution-plot", style={'height': '500px'})], className="glass-card p-4 mb-4")])]),
+        dbc.Row([dbc.Col([html.Div([
+            html.H5([create_icon("scale-balanced"), "Comparison"], style={'color': '#2c3e50'}),
+            html.P("Compare two or more columns using distribution, statistics, correlation, and quality modes.", style={'color': '#64748b'}),
+            dcc.Dropdown(id="comparison-column-selector", className="mb-3", multi=True, placeholder="Select 2 or more columns..."),
+            dbc.RadioItems(
+                id="comparison-mode-selector",
+                options=[
+                    {'label': 'Distribution', 'value': 'distribution'},
+                    {'label': 'Statistics', 'value': 'statistics'},
+                    {'label': 'Correlation', 'value': 'correlation'},
+                    {'label': 'Data Quality', 'value': 'quality'}
+                ],
+                value='distribution',
+                inline=True,
+                className="mb-3"
+            ),
+            html.Div(id="comparison-alert", className="comparison-alert"),
+            dcc.Loading(type="default", children=dcc.Graph(id="comparison-chart", style={'height': '520px'})),
+            dcc.Loading(type="default", children=html.Div(id="comparison-table", className="table-container mt-3"))
+        ], className="glass-card p-4")])])
     ])
 
 def create_automl_layout():
     return html.Div([
-        html.H2("🧠 AutoML Agent", className="section-title mb-4"),
+        html.H2([create_icon("brain"), "AutoML Agent"], className="section-title mb-4"),
         dbc.Row([dbc.Col([html.Div([
-            html.H4("🤖 Automated ML", style={'color': '#2c3e50'}),
+            html.H4([create_icon("robot"), "Automated ML"], style={'color': '#2c3e50'}),
             html.P("Select target and train model", style={'color': '#666'}),
             dcc.Dropdown(id="target-column-selector", className="mb-3", searchable=False, clearable=False, placeholder="Select target column..."),
-            dbc.Button([html.Span("🚀 "), "Train Model"], id="btn-train", size="lg", className="btn-custom w-100"),
+            dbc.Button([create_icon("bolt"), "Train Model"], id="btn-train", size="lg", className="btn-custom w-100"),
             html.Div(id="training-status", className="mt-4")
         ], className="glass-card p-4 mb-4")])]),
         html.Div(id="automl-results-container", children=[
@@ -1667,13 +1836,13 @@ def create_automl_layout():
 
 def create_datagpt_layout():
     return html.Div([
-        html.H2("💬 DataGPT - Answers 1000+ Questions!", className="section-title mb-4"),
+        html.H2([create_icon("comments"), "DataGPT - Answers Your Questions"], className="section-title mb-4"),
         dbc.Row([dbc.Col([html.Div([
             html.Div([
                 html.Div(id="chat-history", className="chat-container", style={'minHeight': '450px', 'marginBottom': '20px'}),
                 dbc.InputGroup([
                     dbc.Input(id="chat-input", placeholder="Ask ANYTHING!  Try: 'what is this about?', 'show columns', 'analyze [column]'", type="text"),
-                    dbc.Button([html.Span("📤")], id="btn-send-chat", className="btn-custom")
+                    dbc.Button([create_icon("paper-plane", class_name="")], id="btn-send-chat", className="btn-custom")
                 ])
             ])
         ], className="glass-card p-4")])]),
@@ -1682,15 +1851,15 @@ def create_datagpt_layout():
 
 def create_export_layout():
     return html.Div([
-        html.H2("📥 Export Professional Report", className="section-title mb-4"),
+        html.H2([create_icon("file-export"), "Export Professional Report"], className="section-title mb-4"),
         dbc.Row([
             dbc.Col([
                 html.Div([
                     html.Div([
-                        html.Div("📊", style={'fontSize': '4rem', 'marginBottom': '20px', 'textAlign': 'center'}),
+                        html.Div(create_icon("file-csv", class_name=""), style={'fontSize': '4rem', 'marginBottom': '20px', 'textAlign': 'center', 'color': '#1d4ed8'}),
                         html.H4("Export Cleaned Dataset", style={'color': '#2c3e50', 'textAlign': 'center'}),
                         html.P("Download your cleaned data as a CSV file", style={'color': '#666', 'textAlign': 'center', 'marginBottom': '25px'}),
-                        dbc.Button([html.Span("📥 "), "Download CSV"], id="btn-export-csv", size="lg", className="btn-custom w-100"),
+                        dbc.Button([create_icon("download"), "Download CSV"], id="btn-export-csv", size="lg", className="btn-custom w-100"),
                         html.Div(id="export-csv-status", className="mt-3")
                     ], className="glass-card p-4", style={'height': '100%'})
                 ])
@@ -1698,10 +1867,10 @@ def create_export_layout():
             dbc.Col([
                 html.Div([
                     html.Div([
-                        html.Div("📑", style={'fontSize': '4rem', 'marginBottom': '20px', 'textAlign': 'center'}),
+                        html.Div(create_icon("file-lines", class_name=""), style={'fontSize': '4rem', 'marginBottom': '20px', 'textAlign': 'center', 'color': '#1d4ed8'}),
                         html.H4("Export Professional Report", style={'color': '#2c3e50', 'textAlign': 'center'}),
                         html.P("Generate a comprehensive HTML report with charts and analysis", style={'color': '#666', 'textAlign': 'center', 'marginBottom': '25px'}),
-                        dbc.Button([html.Span("📑 "), "Generate Report"], id="btn-export-report", size="lg", className="btn-custom w-100"),
+                        dbc.Button([create_icon("file-arrow-down"), "Generate Report"], id="btn-export-report", size="lg", className="btn-custom w-100"),
                         html.Div(id="export-report-status", className="mt-3")
                     ], className="glass-card p-4", style={'height': '100%'})
                 ])
@@ -1710,10 +1879,10 @@ def create_export_layout():
         dbc.Row([
             dbc.Col([
                 html.Div([
-                    html.H4("📋 Export Preview", style={'color': '#2c3e50', 'marginBottom': '20px'}),
+                    html.H4([create_icon("list-check"), "Export Preview"], style={'color': '#2c3e50', 'marginBottom': '20px'}),
                     html.Div(id="export-preview", children=[
                         html.Div([
-                            html.Div("👆", style={'fontSize': '3rem', 'marginBottom': '15px'}),
+                            html.Div(create_icon("hand-pointer", class_name=""), style={'fontSize': '3rem', 'marginBottom': '15px', 'color': '#1d4ed8'}),
                             html.P("Click on an export button above to preview and download your data", style={'color': '#666', 'textAlign': 'center'})
                         ], style={'textAlign': 'center', 'padding': '50px'})
                     ])
@@ -1753,9 +1922,9 @@ def upload_file(contents, filename, session_id):
         raise PreventUpdate
     df = parse_upload_contents(contents, filename)
     if df is None:
-        return dbc.Alert([html.Span("❌ "), "Error"], color="danger"), session_id, False
-    SERVER_DATA_CACHE[session_id] = {'original':  df, 'cleaned': None, 'filename': filename}
-    return dbc.Alert([html.Span("✅ "), f"Uploaded:  {filename} ({df.shape[0]:,} rows)"], color="success"), session_id, True
+        return dbc.Alert([create_icon("circle-exclamation"), "Unable to read the uploaded file."], color="danger"), session_id, False
+    SERVER_DATA_CACHE[session_id] = {'original':  df, 'cleaned': None, 'filename': filename, 'comparison_cache': {}}
+    return dbc.Alert([create_icon("circle-check"), f"Uploaded:  {filename} ({df.shape[0]:,} rows)"], color="success"), session_id, True
 
 @app.callback(
     Output('page-content', 'children'),
@@ -1764,7 +1933,7 @@ def upload_file(contents, filename, session_id):
 )
 def display_page(pathname, data_loaded, session_id):
     if not data_loaded or session_id not in SERVER_DATA_CACHE:
-        return html.Div([html.Div("⚠️", style={'fontSize': '5rem'}), html.H3("Please upload dataset", style={'color': '#2c3e50'})], style={'textAlign': 'center', 'padding': '100px'})
+        return html.Div([html.Div(create_icon("cloud-arrow-up", class_name=""), style={'fontSize': '5rem', 'color': '#1d4ed8'}), html.H3("Please upload a dataset to continue", style={'color': '#2c3e50'})], style={'textAlign': 'center', 'padding': '100px'})
     if pathname == '/cleaning':  return create_cleaning_layout()
     elif pathname == '/visualization': return create_visualization_layout()
     elif pathname == '/automl': return create_automl_layout()
@@ -1800,13 +1969,14 @@ def clean_data(n, sid):
     df_orig = SERVER_DATA_CACHE[sid]['original']
     df_clean = auto_clean_data(df_orig)
     SERVER_DATA_CACHE[sid]['cleaned'] = df_clean
+    SERVER_DATA_CACHE[sid]['comparison_cache'] = {}
     sb = get_health_stats(df_orig)
     sa = get_health_stats(df_clean)
     fb = go.Figure(data=[go.Bar(x=['Missing', 'Dups'], y=[sb['missing'], sb['duplicates']], marker=dict(color=['#ff6b9d', '#ffd93d']))])
     fb.update_layout(title="Before", template='plotly_white', height=300)
     fa = go.Figure(data=[go.Bar(x=['Missing', 'Dups'], y=[sa['missing'], sa['duplicates']], marker=dict(color=['#00d9a5', '#667eea']))])
     fa.update_layout(title="After", template='plotly_white', height=300)
-    return dbc.Alert([html.Span("✅ "), "Done! "], color="success"), fb, fa
+    return dbc.Alert([create_icon("circle-check"), "Cleaning completed."], color="success"), fb, fa
 
 @app.callback(
     [Output('pie-column-selector', 'options'), Output('pie-column-selector', 'value')],
@@ -1864,6 +2034,63 @@ def update_dist(c, sid):
     return create_distribution_plot(df, c)
 
 @app.callback(
+    [Output('comparison-column-selector', 'options'), Output('comparison-column-selector', 'value')],
+    [Input('url', 'pathname'), Input('data-loaded', 'data')],
+    [State('session-id', 'data')]
+)
+def update_comparison_selector(pathname, data_loaded, session_id):
+    """Populate comparison selectors when visualization page is active."""
+    if pathname != '/visualization' or not data_loaded or session_id not in SERVER_DATA_CACHE:
+        raise PreventUpdate
+    df = get_dataframe(session_id)
+    if df is None or len(df.columns) < 2:
+        return [], []
+    options = [{'label': col, 'value': col} for col in df.columns]
+    default_cols = df.columns[:2].tolist()
+    return options, default_cols
+
+@app.callback(
+    [Output('comparison-chart', 'figure'), Output('comparison-table', 'children'), Output('comparison-alert', 'children')],
+    [Input('comparison-column-selector', 'value'), Input('comparison-mode-selector', 'value')],
+    [State('session-id', 'data')],
+    prevent_initial_call=True
+)
+def render_comparison_view(selected_columns, mode, session_id):
+    """Render comparison visualizations and summary metrics."""
+    if not selected_columns or session_id not in SERVER_DATA_CACHE:
+        raise PreventUpdate
+    if isinstance(selected_columns, str):
+        selected_columns = [selected_columns]
+
+    df = get_dataframe(session_id)
+    if df is None:
+        raise PreventUpdate
+
+    cache_key = f"{mode}|{'|'.join(sorted(selected_columns))}|{df.shape[0]}|{df.shape[1]}"
+    comparison_cache = get_comparison_cache(session_id)
+    if cache_key in comparison_cache:
+        fig, rows, note = comparison_cache[cache_key]
+    else:
+        fig, rows, note = create_comparison_analysis(df, selected_columns, mode)
+        comparison_cache[cache_key] = (fig, rows, note)
+
+    if not rows:
+        table = html.Div("No comparison summary available.")
+    else:
+        table = dash_table.DataTable(
+            data=rows,
+            columns=[{'name': col, 'id': col} for col in rows[0].keys()],
+            style_cell={'textAlign': 'left', 'padding': '10px', 'fontSize': '0.88rem'},
+            style_header={'backgroundColor': '#1e40af', 'color': 'white', 'fontWeight': '600'},
+            style_data_conditional=[
+                {'if': {'filter_query': '{Indicator} = "High Missing"'}, 'backgroundColor': '#fef2f2', 'color': '#991b1b'},
+                {'if': {'filter_query': '{Indicator} = "Low Variability"'}, 'backgroundColor': '#fff7ed', 'color': '#9a3412'}
+            ]
+        )
+
+    return fig, table, note
+
+@app.callback(
     [Output('target-column-selector', 'options'), Output('target-column-selector', 'value')],
     [Input('url', 'pathname'), Input('data-loaded', 'data')],
     [State('session-id', 'data')]
@@ -1893,13 +2120,13 @@ def train_model_cb(n, tc, sid):
                 is_best = res['model'] == r.get('best_model_name', '')
                 model_comparison.append(
                     html.Tr([
-                        html.Td([html.Strong(res['model']) if is_best else res['model'], html.Span(" ⭐", style={'color': '#ffd93d'}) if is_best else ""], style={'color': '#667eea' if is_best else '#333'}),
+                        html.Td([html.Strong(res['model']) if is_best else res['model'], html.Span(" (Best)", style={'color': '#ffd93d'}) if is_best else ""], style={'color': '#667eea' if is_best else '#333'}),
                         html.Td(f"{res['score']:.4f}", style={'fontWeight': '700' if is_best else '400', 'color': '#00b894' if is_best else '#333'})
                     ])
                 )
         
         results_content = [
-            html.H5(f"🎯 {r['task_type'].title()}", style={'color': '#2c3e50', 'marginBottom': '15px'}),
+            html.H5([create_icon("bullseye"), f"{r['task_type'].title()}"], style={'color': '#2c3e50', 'marginBottom': '15px'}),
             html.Div([
                 html.Span(f"Best Model: ", style={'color': '#666'}),
                 html.Span(f"{r.get('best_model_name', 'Random Forest')}", style={'fontSize': '1.2rem', 'color': '#764ba2', 'fontWeight': '600'})
@@ -1914,7 +2141,7 @@ def train_model_cb(n, tc, sid):
         if model_comparison:
             results_content.extend([
                 html.Hr(style={'margin': '20px 0'}),
-                html.H6("📊 Model Comparison", style={'color': '#2c3e50', 'marginBottom': '10px'}),
+                html.H6([create_icon("chart-bar"), "Model Comparison"], style={'color': '#2c3e50', 'marginBottom': '10px'}),
                 html.Table([
                     html.Thead(html.Tr([html.Th("Model"), html.Th(r['metric_name'])], style={'backgroundColor': '#f8f9ff'})),
                     html.Tbody(model_comparison)
@@ -1922,13 +2149,13 @@ def train_model_cb(n, tc, sid):
             ])
         
         return (
-            dbc.Alert([html.Span("✅ "), f"Training Complete! Best: {r.get('best_model_name', 'Model')}"], color="success"),
+            dbc.Alert([create_icon("circle-check"), f"Training complete. Best model: {r.get('best_model_name', 'Model')}"], color="success"),
             html.Div(results_content),
             create_feature_importance_chart(r['feature_importance']),
             {'display': 'block'}
         )
     except Exception as e:
-        return dbc.Alert([html.Span("❌ "), str(e)], color="danger"), html.Div(), go.Figure(), {'display': 'none'}
+        return dbc.Alert([create_icon("triangle-exclamation"), str(e)], color="danger"), html.Div(), go.Figure(), {'display': 'none'}
 
 
 @app.callback(
@@ -1942,8 +2169,8 @@ def chat(n, ui, ch, sid):
     fn = SERVER_DATA_CACHE.get(sid, {}).get('filename', '')
     rt, figs = parse_datagpt_query(ui, df, fn)
     if ch is None:  ch = []
-    ch.append(html.Div([html.Strong("👤 You", style={'color': '#667eea', 'display': 'block', 'marginBottom': '5px'}), html.Div(ui, style={'color': 'white'})], className="chat-message-user"))
-    ch.append(html.Div([html.Strong("🤖 DataGPT", style={'color': '#764ba2', 'display': 'block', 'marginBottom':  '5px'}), dcc. Markdown(rt, style={'color': '#333'})], className="chat-message-bot"))
+    ch.append(html.Div([html.Strong("You", style={'color': '#667eea', 'display': 'block', 'marginBottom': '5px'}), html.Div(ui, style={'color': 'white'})], className="chat-message-user"))
+    ch.append(html.Div([html.Strong("DataGPT", style={'color': '#764ba2', 'display': 'block', 'marginBottom':  '5px'}), dcc. Markdown(rt, style={'color': '#333'})], className="chat-message-bot"))
     gc = []
     if figs and isinstance(figs, list):
         for f in figs:
@@ -1971,7 +2198,7 @@ def export_csv(n, sid):
     
     # Create preview
     preview = html.Div([
-        html.H5("✅ CSV Export Ready", style={'color': '#00b894', 'marginBottom': '15px'}),
+        html.H5([create_icon("circle-check"), "CSV Export Ready"], style={'color': '#00b894', 'marginBottom': '15px'}),
         html.P(f"Dataset: {filename}", style={'color': '#666'}),
         html.P(f"Rows: {len(df):,} | Columns: {len(df.columns)}", style={'color': '#666', 'marginBottom': '15px'}),
         html.Div([
@@ -1987,7 +2214,7 @@ def export_csv(n, sid):
     # Export file
     export_filename = filename.replace('.csv', '_cleaned.csv') if '.csv' in filename else f"{filename}_cleaned.csv"
     
-    return dcc.send_data_frame(df.to_csv, export_filename, index=False), dbc.Alert([html.Span("✅ "), "CSV downloaded!"], color="success"), preview
+    return dcc.send_data_frame(df.to_csv, export_filename, index=False), dbc.Alert([create_icon("circle-check"), "CSV downloaded."], color="success"), preview
 
 # Export Report callback
 @app.callback(
@@ -2011,39 +2238,39 @@ def export_report(n, sid):
     completeness = ((df.shape[0] * df.shape[1] - stats['missing']) / (df.shape[0] * df.shape[1]) * 100) if df.shape[0] * df.shape[1] > 0 else 0
     
     preview = html.Div([
-        html.H5("✅ Professional Report Generated", style={'color': '#00b894', 'marginBottom': '20px'}),
+        html.H5([create_icon("circle-check"), "Professional Report Generated"], style={'color': '#00b894', 'marginBottom': '20px'}),
         dbc.Row([
             dbc.Col([
                 html.Div([
-                    html.Div("📊", style={'fontSize': '2rem', 'marginBottom': '10px'}),
+                    html.Div(create_icon("table", class_name=""), style={'fontSize': '2rem', 'marginBottom': '10px', 'color': '#1d4ed8'}),
                     html.H6(f"{len(df):,}", style={'color': '#667eea', 'fontSize': '1.5rem', 'fontWeight': '700'}),
                     html.P("Records", style={'color': '#666', 'fontSize': '0.85rem'})
                 ], style={'textAlign': 'center', 'padding': '15px', 'background': '#f8f9ff', 'borderRadius': '10px'})
             ], md=3),
             dbc.Col([
                 html.Div([
-                    html.Div("📋", style={'fontSize': '2rem', 'marginBottom': '10px'}),
+                    html.Div(create_icon("table-columns", class_name=""), style={'fontSize': '2rem', 'marginBottom': '10px', 'color': '#1d4ed8'}),
                     html.H6(f"{len(df.columns)}", style={'color': '#667eea', 'fontSize': '1.5rem', 'fontWeight': '700'}),
                     html.P("Features", style={'color': '#666', 'fontSize': '0.85rem'})
                 ], style={'textAlign': 'center', 'padding': '15px', 'background': '#f8f9ff', 'borderRadius': '10px'})
             ], md=3),
             dbc.Col([
                 html.Div([
-                    html.Div("✅", style={'fontSize': '2rem', 'marginBottom': '10px'}),
+                    html.Div(create_icon("shield-check", class_name=""), style={'fontSize': '2rem', 'marginBottom': '10px', 'color': '#00b894'}),
                     html.H6(f"{completeness:.1f}%", style={'color': '#00b894', 'fontSize': '1.5rem', 'fontWeight': '700'}),
                     html.P("Quality", style={'color': '#666', 'fontSize': '0.85rem'})
                 ], style={'textAlign': 'center', 'padding': '15px', 'background': '#f0fff4', 'borderRadius': '10px'})
             ], md=3),
             dbc.Col([
                 html.Div([
-                    html.Div("📈", style={'fontSize': '2rem', 'marginBottom': '10px'}),
+                    html.Div(create_icon("chart-line", class_name=""), style={'fontSize': '2rem', 'marginBottom': '10px', 'color': '#764ba2'}),
                     html.H6(f"{len(df.select_dtypes(include=[np.number]).columns)}", style={'color': '#764ba2', 'fontSize': '1.5rem', 'fontWeight': '700'}),
                     html.P("Numeric Cols", style={'color': '#666', 'fontSize': '0.85rem'})
                 ], style={'textAlign': 'center', 'padding': '15px', 'background': '#faf5ff', 'borderRadius': '10px'})
             ], md=3),
         ]),
         html.Div([
-            html.P("📑 Your professional HTML report includes:", style={'color': '#2c3e50', 'fontWeight': '600', 'marginTop': '20px', 'marginBottom': '10px'}),
+            html.P([create_icon("file-lines"), "Your professional HTML report includes:"], style={'color': '#2c3e50', 'fontWeight': '600', 'marginTop': '20px', 'marginBottom': '10px'}),
             html.Ul([
                 html.Li("Executive summary with key metrics"),
                 html.Li("Data quality analysis"),
@@ -2057,7 +2284,7 @@ def export_report(n, sid):
     # Export file
     report_filename = filename.replace('.csv', '_report.html') if '.csv' in filename else f"{filename}_report.html"
     
-    return dict(content=html_report, filename=report_filename, type='text/html'), dbc.Alert([html.Span("✅ "), "Report downloaded!"], color="success"), preview
+    return dict(content=html_report, filename=report_filename, type='text/html'), dbc.Alert([create_icon("circle-check"), "Report downloaded."], color="success"), preview
 
 # =============================================================================
 # RUN APPLICATION
@@ -2065,10 +2292,10 @@ def export_report(n, sid):
 
 if __name__ == '__main__':  
     print("="*70)
-    print("🚀 AI Data Analyst with ULTRA-POWERED DataGPT!")
+    print("AI Data Analyst with DataGPT")
     print("="*70)
-    print("\n📍 Open:  http://localhost:8050")
-    print("\n💬 DataGPT handles 1000+ question variations!")
-    print("\n💡 Press CTRL+C to stop\n")
+    print("\nOpen:  http://localhost:8050")
+    print("\nDataGPT handles 1000+ question variations.")
+    print("\nPress CTRL+C to stop\n")
     print("="*70)
     app.run(debug=False, host='0.0.0.0', port=8050)
